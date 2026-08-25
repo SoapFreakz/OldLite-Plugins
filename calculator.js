@@ -29,6 +29,7 @@ const POPOUT_MIN_HEIGHT = 190;
 const POPOUT_BASE_WIDTH = POPOUT_DEFAULT_WIDTH;
 const POPOUT_BASE_HEADER_FONT = 12;
 const POPOUT_BASE_DISPLAY_FONT = 26;
+const POPOUT_BASE_HISTORY_FONT = 12;
 const POPOUT_BASE_BUTTON_FONT = 14;
 
 // ---- Calculator engine (pure functions over a plain state object) ----
@@ -39,6 +40,14 @@ function createEngine() {
     accumulator: null,
     operator: null,
     waitingForOperand: false,
+    // Set by equals() to the full "240÷16" expression that produced the
+    // current `display` value, and cleared (well — ignored, see
+    // justEvaluated) the moment any other button starts a new entry.
+    historyText: '',
+    // True only in the instant after "=" — tells the renderer to show the
+    // two-line "small expression above, big result below" layout instead
+    // of the single-line "building expression" layout.
+    justEvaluated: false,
   };
 }
 
@@ -50,7 +59,19 @@ function formatResult(n) {
   return s;
 }
 
+// The single-line "what am I doing right now" string shown while an
+// expression is being built, e.g. typing 240, then ÷, then 16 renders
+// "240", "240÷", "240÷16" in turn. Once accumulator is null again (fresh
+// entry, or right after clearAll) it's just the current typed number.
+function buildExpressionString(engine) {
+  if (engine.accumulator === null) return engine.display;
+  const accStr = formatResult(engine.accumulator);
+  if (engine.waitingForOperand) return accStr + engine.operator;
+  return accStr + engine.operator + engine.display;
+}
+
 function inputDigit(engine, digit) {
+  engine.justEvaluated = false;
   if (engine.display === 'Error') {
     engine.display = digit;
     engine.waitingForOperand = false;
@@ -65,6 +86,7 @@ function inputDigit(engine, digit) {
 }
 
 function inputDecimal(engine) {
+  engine.justEvaluated = false;
   if (engine.waitingForOperand || engine.display === 'Error') {
     engine.display = '0.';
     engine.waitingForOperand = false;
@@ -75,6 +97,7 @@ function inputDecimal(engine) {
 
 function backspace(engine) {
   if (engine.waitingForOperand || engine.display === 'Error') return;
+  engine.justEvaluated = false;
   engine.display = engine.display.length > 1 ? engine.display.slice(0, -1) : '0';
 }
 
@@ -83,14 +106,18 @@ function clearAll(engine) {
   engine.accumulator = null;
   engine.operator = null;
   engine.waitingForOperand = false;
+  engine.historyText = '';
+  engine.justEvaluated = false;
 }
 
 function toggleSign(engine) {
+  engine.justEvaluated = false;
   if (engine.display === '0' || engine.display === 'Error') return;
   engine.display = engine.display.startsWith('-') ? engine.display.slice(1) : '-' + engine.display;
 }
 
 function percent(engine) {
+  engine.justEvaluated = false;
   if (engine.display === 'Error') return;
   engine.display = formatResult(parseFloat(engine.display) / 100);
 }
@@ -106,6 +133,7 @@ function applyOp(a, b, op) {
 }
 
 function performOperation(engine, nextOperator) {
+  engine.justEvaluated = false;
   if (engine.display === 'Error') return;
   const inputValue = parseFloat(engine.display);
   if (engine.accumulator === null) {
@@ -121,15 +149,39 @@ function performOperation(engine, nextOperator) {
 function equals(engine) {
   if (engine.display === 'Error' || engine.operator === null || engine.accumulator === null) return;
   const inputValue = parseFloat(engine.display);
+  // Captured before we reset accumulator/operator below — this is the
+  // "240÷16" that goes into the small history line.
+  const exprBefore = buildExpressionString(engine);
   const result = applyOp(engine.accumulator, inputValue, engine.operator);
+  engine.historyText = exprBefore;
+  engine.justEvaluated = true;
   engine.display = formatResult(result);
   engine.accumulator = null;
   engine.operator = null;
   engine.waitingForOperand = true;
 }
 
-// ---- Shared markup for the button grid (used by both the settings view
-// and the pop-out — identical layout, just scaled differently by CSS) ----
+// What the two display lines should currently read.
+function renderDisplayState(engine) {
+  if (engine.justEvaluated) {
+    return { history: engine.historyText, main: engine.display };
+  }
+  return { history: '', main: buildExpressionString(engine) };
+}
+
+// Shared markup for the two-line display — a small, dim "history" line
+// (only occupied right after "=") sitting above the big main line (either
+// the expression being built, or the result). Same markup in the
+// settings view and the pop-out, just scaled differently by CSS.
+function displayHtml(engine) {
+  const { history, main } = renderDisplayState(engine);
+  return `
+    <div class="calc-display-wrap">
+      <div class="calc-display-history">${history}</div>
+      <div class="calc-display">${main}</div>
+    </div>
+  `;
+}
 
 function buttonGridHtml() {
   return `
@@ -220,6 +272,7 @@ function init(api) {
     const scale = Math.max(0.6, rect.width / POPOUT_BASE_WIDTH);
     entry.headerEl.style.fontSize = (POPOUT_BASE_HEADER_FONT * scale) + 'px';
     entry.displayEl.style.fontSize = (POPOUT_BASE_DISPLAY_FONT * scale) + 'px';
+    entry.historyEl.style.fontSize = (POPOUT_BASE_HISTORY_FONT * scale) + 'px';
     entry.el.querySelectorAll('.calc-btn').forEach((btn) => {
       btn.style.fontSize = (POPOUT_BASE_BUTTON_FONT * scale) + 'px';
     });
@@ -302,8 +355,15 @@ function init(api) {
 
   // Pushes engine.display into whichever UI(s) are currently mounted.
   function refreshDisplays() {
-    if (settingsView) settingsView.displayEl.textContent = engine.display;
-    if (popoutEntry) popoutEntry.displayEl.textContent = engine.display;
+    const { history, main } = renderDisplayState(engine);
+    if (settingsView) {
+      settingsView.historyEl.textContent = history;
+      settingsView.displayEl.textContent = main;
+    }
+    if (popoutEntry) {
+      popoutEntry.historyEl.textContent = history;
+      popoutEntry.displayEl.textContent = main;
+    }
   }
 
   function refreshPopoutBtnState() {
@@ -362,7 +422,7 @@ function init(api) {
         <span class="calc-popout-close" title="Close">&times;</span>
       </div>
       <div class="calc-popout-body">
-        <div class="calc-display">${engine.display}</div>
+        ${displayHtml(engine)}
         <div class="calc-grid">${buttonGridHtml()}</div>
       </div>
       <div class="calc-popout-resize" title="Resize"></div>
@@ -373,6 +433,7 @@ function init(api) {
     const entry = {
       el,
       headerEl: el.querySelector('.calc-popout-header'),
+      historyEl: el.querySelector('.calc-display-history'),
       displayEl: el.querySelector('.calc-display'),
       resizeEl: el.querySelector('.calc-popout-resize'),
       cleanup: [],
@@ -416,20 +477,41 @@ function init(api) {
     .calc-popout-btn:hover { color: var(--ol-accent); }
     .calc-popout-btn.active { color: var(--ol-accent); }
 
-    .calc-display {
+    .calc-display-wrap {
       background: var(--ol-bg);
       border: 1px solid #2e2818;
       border-radius: 6px;
+      padding: 10px 12px 12px;
+      margin-bottom: 10px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      overflow: hidden;
+    }
+    .calc-display-history {
+      color: var(--ol-text-tertiary);
+      font-family: inherit;
+      font-size: 1.1vw;
+      line-height: 1.4;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+    /* Collapses to nothing while building an expression (screenshot #1) —
+       only occupied right after "=" (screenshot #2). */
+    .calc-display-history:empty { display: none; }
+    .calc-display {
       color: var(--ol-text);
       text-align: right;
-      padding: 14px 12px;
-      margin-bottom: 10px;
       font-family: inherit;
       font-size: 2.2vw;
       font-weight: bold;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      max-width: 100%;
     }
     .calc-grid { display: flex; flex-direction: column; gap: 8px; }
     .calc-row { display: flex; gap: 8px; }
@@ -495,7 +577,9 @@ function init(api) {
       overflow: hidden;
       min-height: 0;
     }
-    .calc-popout-body .calc-display { font-size: 22px; padding: 10px 8px; }
+    .calc-popout-body .calc-display-wrap { padding: 8px 8px 10px; }
+    .calc-popout-body .calc-display-history { font-size: 10px; }
+    .calc-popout-body .calc-display { font-size: 22px; }
     .calc-popout-body .calc-grid { flex: 1 1 auto; }
     .calc-popout-body .calc-btn { font-size: 13px; padding: 0; flex-basis: 0; }
     .calc-popout-resize {
@@ -520,14 +604,15 @@ function init(api) {
           </div>
           <span class="calc-popout-btn${popoutEntry ? ' active' : ''}" id="calc-popout-toggle" title="Pop out">&#x2197;</span>
         </div>
-        <div class="calc-display" id="calc-display">${engine.display}</div>
+        ${displayHtml(engine)}
         <div class="calc-grid">${buttonGridHtml()}</div>
       `;
 
       document.getElementById('calc-back').addEventListener('click', exit);
 
       settingsView = {
-        displayEl: document.getElementById('calc-display'),
+        historyEl: container.querySelector('.calc-display-history'),
+        displayEl: container.querySelector('.calc-display'),
         popoutBtnEl: document.getElementById('calc-popout-toggle'),
       };
 
@@ -554,8 +639,8 @@ function destroy() {
 export default {
   id: 'calculator',
   name: 'Calculator',
-  description: 'A simple four-function calculator, right inside the client.',
-  version: '1.0.0',
+  description: 'A simple calculator, right inside the client.',
+  version: '1.1.3',
   author: 'goku',
   native: true,
   icon: 'Calculator.png',
