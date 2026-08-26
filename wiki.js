@@ -630,11 +630,21 @@ function init(api) {
     return dedupeNotedItems(flaggedRemoved);
   }
 
-  function matchesSearch(entry, q) {
-    if (!q) return true;
-    return safeName(entry).toLowerCase().includes(q);
-  }
+function matchesSearch(entry, q) {
+  if (!q) return true;
+  const name = safeName(entry).toLowerCase();
+  const words = q.split(/\s+/).filter(Boolean);
+  return words.every((w) => name.includes(w));
+}
 
+  function searchRelevance(entry, q) {
+  const name = safeName(entry).toLowerCase();
+  if (name === q) return 0;                                   // exact match
+  if (name.startsWith(q)) return 1;                            // starts with query
+  if (new RegExp(`\\b${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(name)) return 2; // starts a word
+  return 3;                                                    // contained anywhere else
+}
+  
   // Filters an entry pool down to one browse category. null/'all' means
   // no filtering. 'saved' reads off the Saved Pages set. 'droptable'
   // covers both real shared drop tables AND the synthesized clue pages,
@@ -2059,7 +2069,10 @@ function init(api) {
         // selected browse category only applies when there's no active
         // search text (see showingList / input handler above).
         pool = q ? allEntries() : filterByCategory(allEntries(), browseCategory);
-        matches = pool.filter((e) => matchesSearch(e, q)).slice(0, 200);
+        matches = pool
+  .filter((e) => matchesSearch(e, q))
+  .sort((a, b) => searchRelevance(a, q) - searchRelevance(b, q) || safeName(a).localeCompare(safeName(b)))
+  .slice(0, 200);
       } catch (err) {
         api.warn('[wiki] search error:', err);
         listEl.innerHTML = `<div class="wiki-error">Search hit a data error: ${escapeHtml(
@@ -2118,7 +2131,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
-  version: '1.7.0',
+  version: '1.7.1',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
