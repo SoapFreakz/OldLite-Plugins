@@ -269,6 +269,7 @@ function init(api) {
                 <span>${site.name}</span>
                 <span class="ch-inclient-check" data-check="${site.id}" style="display:none;">&#10003;</span>
               </div>
+              <div class="ch-inclient-webview-wrap" data-wrap="${site.id}"></div>
             </div>
           `).join('')}
         </div>
@@ -289,16 +290,40 @@ function init(api) {
         });
       }
 
-      SITES.forEach((site) => {
-        const cell = overlay.querySelector(`[data-cell="${site.id}"]`);
-        const webview = document.createElement('webview');
-        webview.setAttribute('src', site.buildUrl(username));
-        cell.appendChild(webview);
-        webview.addEventListener('did-finish-load', () => {
-          if (markedThisSession.has(site.id)) return;
-          markedThisSession.add(site.id);
-          markVisited(site.id);
-          refreshChecks();
+      // <webview> is notorious for painting solid black if it gets attached
+      // before its container has a settled, non-flex-computed size — the
+      // guest compositor's first frame comes in at whatever size it saw on
+      // attach, and CSS alone resizing it afterward doesn't always trigger
+      // a repaint. Two mitigations here: (1) each webview lives in its own
+      // absolutely-positioned wrapper (`.ch-inclient-webview-wrap`, inset:0
+      // inside an already-flex-sized parent) instead of being flex/grid
+      // sized itself, and (2) creation is deferred one frame (rAF) past the
+      // innerHTML paint so the grid has actually laid out before attach,
+      // plus a synthetic window resize dispatch on dom-ready as a repaint
+      // nudge — the same trick loader.js already uses elsewhere to force
+      // the page to re-layout after a programmatic size change.
+      requestAnimationFrame(() => {
+        SITES.forEach((site) => {
+          const wrap = overlay.querySelector(`[data-wrap="${site.id}"]`);
+          if (!wrap) return;
+          const webview = document.createElement('webview');
+          webview.setAttribute('src', site.buildUrl(username));
+          webview.style.width = '100%';
+          webview.style.height = '100%';
+          wrap.appendChild(webview);
+
+          webview.addEventListener('dom-ready', () => {
+            // Nudge the guest compositor to repaint at its real size.
+            window.dispatchEvent(new Event('resize'));
+            setTimeout(() => window.dispatchEvent(new Event('resize')), 150);
+          });
+
+          webview.addEventListener('did-finish-load', () => {
+            if (markedThisSession.has(site.id)) return;
+            markedThisSession.add(site.id);
+            markVisited(site.id);
+            refreshChecks();
+          });
         });
       });
 
@@ -493,7 +518,11 @@ function init(api) {
       font-size: 1.05vw; font-weight: bold; flex-shrink: 0;
     }
     .ch-inclient-check { color: #4caf6d; font-size: 1.1vw; }
-    .ch-inclient-cell webview { flex: 1; width: 100%; height: 100%; min-height: 0; }
+    /* Absolutely positioned inside an already flex-sized parent, rather
+       than being flex/grid sized itself — see the comment above where
+       this is created for why. */
+    .ch-inclient-webview-wrap { position: relative; flex: 1; min-height: 0; }
+    .ch-inclient-webview-wrap webview { position: absolute; inset: 0; width: 100%; height: 100%; }
 
     .ch-ready-toast {
       position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
@@ -528,8 +557,8 @@ function destroy() {
 export default {
   id: 'community-hub',
   name: 'Community Hub',
-  description: 'Discord, website, and vote-site shortcuts with in-client voting and a voting cooldown.',
-  version: '1.1.0',
+  description: 'Discord, website, and vote-site shortcuts with in-client voting and a 12h cooldown tracker.',
+  version: '1.0.0',
   author: 'goku',
   native: true,
   icon: 'Community.png',
