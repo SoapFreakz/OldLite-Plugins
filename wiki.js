@@ -303,10 +303,29 @@ const WIKI_STYLE = `
     width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse;
     font-size: 0.75em; margin-bottom: 0.4em;
   }
-  .wiki-data-table th, .wiki-data-table td {
-    border: 1px solid #2e2818; padding: 0.4em 0.55em; text-align: middle; vertical-align: middle;
-    overflow-wrap: break-word; word-break: break-word;
-  }
+.wiki-data-table {
+  width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse;
+  font-size: 0.9em; margin-bottom: 0.4em;
+}
+
+.wiki-data-table th, .wiki-data-table td {
+  border: 1px solid #2e2818; padding: 0.4em 0.55em; text-align: left; vertical-align: middle;
+  overflow-wrap: break-word; word-break: break-word;
+}
+
+.wiki-data-table th:nth-child(1),
+.wiki-data-table td:nth-child(1) { width: 60%; }
+
+.wiki-data-table th:nth-child(2),
+.wiki-data-table td:nth-child(2) { width: 12%; }
+
+.wiki-data-table th:nth-child(3),
+.wiki-data-table td:nth-child(3) { width: 28%; }
+
+.wiki-data-table th {
+  background: var(--ol-panel-bg); color: var(--ol-text-tertiary); font-weight: 600;
+}
+
   .wiki-data-table th {
     background: var(--ol-panel-bg); color: var(--ol-text-tertiary); font-weight: 600;
   }
@@ -1814,7 +1833,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
-  version: '1.1.14',
+  version: '1.1.15',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
