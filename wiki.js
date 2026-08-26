@@ -58,7 +58,7 @@ const WIKI_STYLE = `
   .wiki-root {
     display: flex; flex-direction: column; height: 100%; min-height: 0;
     /* single scale knob — everything below is em off this */
-    font-size: clamp(11px, 1.05vw, 19px);
+    font-size: clamp(04px, 1.05vw, 32px);
   }
 
   /* ---------- home / front page ---------- */
@@ -557,7 +557,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items and NPCs.',
-  version: '1.0.3',
+  version: '1.0.4',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
