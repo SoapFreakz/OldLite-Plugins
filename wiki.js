@@ -623,11 +623,10 @@ function init(api) {
     return entries.filter((e) => !dropIds.has(e.id));
   }
 
-  function visibleEntries() {
-    const flaggedRemoved = wikiData.entries.filter(
+function visibleEntries() {
+    return wikiData.entries.filter(
       (e) => !isNotedItem(e) && !(e.kind === 'item' && CLUE_ITEM_NAME_RE.test(safeName(e)))
     );
-    return dedupeNotedItems(flaggedRemoved);
   }
 
 function matchesSearch(entry, q) {
@@ -889,7 +888,12 @@ function matchesSearch(entry, q) {
   }
 
   function buildShops() {
-    const rawShops = Array.isArray(wikiData.shops) ? wikiData.shops : [];
+    const shopsSource = wikiData.shops;
+    const rawShops = Array.isArray(shopsSource)
+      ? shopsSource
+      : shopsSource && typeof shopsSource === 'object'
+      ? Object.values(shopsSource)
+      : [];
     const entries = [];
     const byItemId = new Map(); // itemEntry.id -> [{ shopEntry, qty, price }]
     const byNpcId = new Map(); // npcEntry.id -> [shopEntry]
@@ -2131,7 +2135,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
-  version: '1.7.1',
+  version: '1.7.2',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
