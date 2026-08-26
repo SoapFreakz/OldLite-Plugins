@@ -22,8 +22,9 @@
 // needs real list -> detail navigation, not the fixed field/section
 // settings schema.
 //
-// State: none persisted. Search text and the currently-open page are
-// just in-memory render state, reset each time the panel opens.
+// State: none persisted (except Saved Pages, see v1.6 below). Search
+// text and the currently-open page are in-memory render state, reset
+// each time the panel opens.
 //
 // STYLE INJECTION: the stylesheet is appended to document.head (once,
 // guarded by id) rather than into `container`. paint() replaces
@@ -170,6 +171,38 @@
 //     instead of collapsing straight to search/home. Clicking the "Wiki"
 //     panel title jumps straight to the home page and clears history.
 //     Opening any new detail page scrolls the panel back to the top.
+//
+// v1.6 changes -- clue icons, real shop data shape, saved pages, browse
+// categories, NPC combat stats:
+//   - Clue scroll pages now show an icon. All 3 tiers are visually
+//     identical in-game, so rather than guess a sprite id we just borrow
+//     the sourceId off whichever real "Clue scroll (...)" item entry
+//     wiki.json still has lying around in wikiData.entries (it's already
+//     excluded from visibleEntries()/search -- this only reads its
+//     sprite id) -- see findClueSpriteSourceId().
+//   - Shop parsing rewritten to match the real wiki.json shape: a shop's
+//     shopkeeper(s) come from `npcDebugnames`/`npcIds`, not a generic
+//     `npc` field, and each stock row is `{ debugname, itemId,
+//     sharedTableRef, conditional, quantity }` with NO explicit price --
+//     price is always derived from the item's value (derivedShopPrice).
+//     The shop detail page's Stock section is now a real <table> (Item /
+//     Stock / Cost columns) per plan, instead of the icon-stack rows
+//     used for drop tables.
+//   - Saved Pages: every detail page (item/npc/shop/droptable/clue) now
+//     has a star toggle in the top-right of its title bar. Starring
+//     persists the page id to localStorage (this is in-client plugin
+//     code, not a claude.ai artifact, so real browser storage is fine
+//     here) so it survives reopening the panel/client.
+//   - Home page now has a full set of browse-by-category entry points
+//     (Browse All / Items / NPCs / Shops / Drop Tables / Saved Pages)
+//     instead of just one generic "Browse all" button. "Drop Tables"
+//     covers both 'droptable' and 'clue' kind pages, since clues are
+//     conceptually drop tables too.
+//   - NPCs now get their own "Combat Stats" table (Style/Attack/
+//     Strength/Magic/the four defence stats), read off the NPC's
+//     `combat` object and `damageType`, mirroring the item equip-bonus
+//     table below it. NPC infobox also now shows Respawn rate, Hunt
+//     range, Max range and Wander range when present.
 
 const WIKI_DATA_URL =
   'https://raw.githubusercontent.com/SoapFreakz/OldLite-Plugins/main/wiki-data/wiki.json';
@@ -181,6 +214,7 @@ const NPC_SPRITESHEET_URL =
   'https://raw.githubusercontent.com/SoapFreakz/OldLite-Plugins/main/sprites/npc_spritesheet.png';
 
 const STYLE_ID = 'ol-wiki-plugin-style';
+const SAVED_PAGES_KEY = 'oldlite-wiki-saved-pages';
 
 // ---------------------------------------------------------------------
 // Sprite sheet layout — copied verbatim from losthq's js/spriteLoader.js
@@ -209,14 +243,18 @@ const WIKI_STYLE = `
   .wiki-home-desc {
     color: var(--ol-text-secondary); font-size: 1em; line-height: 1.5; margin-bottom: 1em;
   }
-  .wiki-home-stats { display: flex; gap: 1.2em; margin-bottom: 1.2em; }
+  .wiki-home-stats { display: flex; gap: 1.2em; margin-bottom: 1.2em; flex-wrap: wrap; }
   .wiki-home-stat { color: var(--ol-text-tertiary); font-size: 0.95em; }
   .wiki-home-stat b { color: var(--ol-accent); font-size: 1.15em; }
+  .wiki-home-browse-grid { display: flex; flex-wrap: wrap; gap: 0.6em; }
   .wiki-home-browse-btn {
     display: inline-block; background: var(--ol-accent); color: var(--ol-bg); font-weight: bold;
     font-size: 1em; border: none; border-radius: 0.45em; padding: 0.55em 1.1em; cursor: pointer;
   }
   .wiki-home-browse-btn:hover { filter: brightness(1.08); }
+  .wiki-home-browse-btn.wiki-home-browse-btn-secondary {
+    background: var(--ol-panel-bg); color: var(--ol-text);
+  }
 
   /* ---------- list view ---------- */
   .wiki-search-wrap { padding: 0.6em 0.7em; border-bottom: 1px solid #2e2818; }
@@ -274,6 +312,12 @@ const WIKI_STYLE = `
     font-size: 0.62em; font-weight: normal; color: var(--ol-text-tertiary); text-transform: uppercase;
     letter-spacing: 0.04em;
   }
+  .wiki-star-btn {
+    margin-left: auto; cursor: pointer; font-size: 1em; line-height: 1; color: var(--ol-text-tertiary);
+    flex-shrink: 0; padding: 0 0.1em; user-select: none;
+  }
+  .wiki-star-btn:hover { color: var(--ol-accent); }
+  .wiki-star-btn.wiki-star-active { color: #e0c343; }
   .wiki-infobox {
     width: 100%; max-width: 100%; box-sizing: border-box; background: var(--ol-panel-bg);
     border: 1px solid #2e2818; border-radius: 0.55em; overflow: hidden; margin-bottom: 1em;
@@ -313,7 +357,7 @@ const WIKI_STYLE = `
     border-bottom: 1px solid #2e2818; padding-bottom: 0.3em;
   }
 
-  /* combat bonuses table, OSRS-wiki style */
+  /* combat bonuses table, OSRS-wiki style (also reused for NPC combat stats) */
   .wiki-bonus-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 0.85em; }
   .wiki-bonus-table th, .wiki-bonus-table td {
     border: 1px solid #2e2818; padding: 0.4em 0.45em; text-align: center;
@@ -329,6 +373,19 @@ const WIKI_STYLE = `
   .wiki-other-bonuses { display: flex; flex-wrap: wrap; gap: 0.5em 1.3em; margin-top: 0.5em; }
   .wiki-other-bonus { font-size: 0.85em; color: var(--ol-text-secondary); }
   .wiki-other-bonus b { color: var(--ol-accent); }
+
+  /* ---------- shop stock table (Item / Stock / Cost) ---------- */
+  .wiki-shop-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+  .wiki-shop-table th {
+    background: var(--ol-panel-bg); color: var(--ol-text-tertiary); font-weight: 600;
+    text-align: left; padding: 0.4em 0.5em; border-bottom: 1px solid #2e2818;
+  }
+  .wiki-shop-table th.wiki-shop-col-num, .wiki-shop-table td.wiki-shop-col-num { text-align: right; }
+  .wiki-shop-table td {
+    padding: 0.4em 0.5em; border-top: 1px solid #241f14; vertical-align: middle; color: var(--ol-text);
+  }
+  .wiki-shop-item-inner { display: flex; align-items: center; gap: 0.6em; }
+  .wiki-shop-item-inner .wiki-drop-icon { flex-shrink: 0; }
 
   /* ---------- drop / stock / shared-table rows (icon+name, then qty+rarity) ---------- */
   .wiki-drop-list { margin-bottom: 0.4em; }
@@ -513,9 +570,41 @@ function init(api) {
   let loadPromise = null;
 
   let searchText = '';
-  let browseAll = false; // true once user hits "Browse all" from the home page
+  let browseCategory = null; // null | 'all' | 'item' | 'npc' | 'shop' | 'droptable' | 'saved'
   let openEntryId = null; // null = list/home view, else showing that entry's page
-  let navStack = []; // stack of previous {openEntryId, browseAll, searchText} states, for Back
+  let navStack = []; // stack of previous {openEntryId, browseCategory, searchText} states, for Back
+
+  // -----------------------------------------------------------------
+  // Saved Pages — persisted to localStorage (this is in-client plugin
+  // code, not a claude.ai artifact, so real browser storage works fine
+  // and survives closing/reopening the client).
+  // -----------------------------------------------------------------
+  function loadSavedPageIds() {
+    try {
+      const raw = localStorage.getItem(SAVED_PAGES_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return new Set(Array.isArray(arr) ? arr : []);
+    } catch (e) {
+      api.warn('[wiki] failed to load saved pages:', e);
+      return new Set();
+    }
+  }
+
+  function persistSavedPageIds() {
+    try {
+      localStorage.setItem(SAVED_PAGES_KEY, JSON.stringify(Array.from(savedPageIds)));
+    } catch (e) {
+      api.warn('[wiki] failed to persist saved pages:', e);
+    }
+  }
+
+  let savedPageIds = loadSavedPageIds();
+
+  function toggleSaved(id) {
+    if (savedPageIds.has(id)) savedPageIds.delete(id);
+    else savedPageIds.add(id);
+    persistSavedPageIds();
+  }
 
   function fetchWikiData() {
     if (loadPromise) return loadPromise;
@@ -642,6 +731,17 @@ function init(api) {
     return safeName(entry).toLowerCase().includes(q);
   }
 
+  // Filters an entry pool down to one browse category. null/'all' means
+  // no filtering. 'saved' reads off the Saved Pages set. 'droptable'
+  // covers both real shared drop tables AND the synthesized clue pages,
+  // since clues are conceptually drop tables too.
+  function filterByCategory(entries, category) {
+    if (!category || category === 'all') return entries;
+    if (category === 'saved') return entries.filter((e) => savedPageIds.has(e.id));
+    if (category === 'droptable') return entries.filter((e) => e.kind === 'droptable' || e.kind === 'clue');
+    return entries.filter((e) => e.kind === category);
+  }
+
   // -----------------------------------------------------------------
   // Shops / drop tables / clue combining
   //
@@ -759,11 +859,26 @@ function init(api) {
     return `${w}/${rollBase}`;
   }
 
-  // Normalizes one shop's `stock` field. Supports the two shapes we
-  // expect the build script to plausibly produce:
-  //   { "item-556": 10 }                         (bare qty)
-  //   { "item-556": { qty: 10, price: 200 } }     (qty + explicit price)
-  //   [ { item: "item-556", stock: 10, price: 200 } ]  (array form)
+  // Normalizes one shop's `shopkeeper` reference(s). Confirmed real shape
+  // (from wiki.json's shop objects) is `npcDebugnames: ["lowe"]` plus a
+  // parallel `npcIds: [null]` array (often null-padded when the id isn't
+  // resolved yet) -- NOT a generic `npc`/`npcs`/`shopkeeper` field, though
+  // those are still checked as a fallback in case a different shop entry
+  // uses them instead.
+  function normalizeShopNpcRefs(shop) {
+    const debugnames = Array.isArray(shop.npcDebugnames) ? shop.npcDebugnames : [];
+    const ids = Array.isArray(shop.npcIds) ? shop.npcIds : [];
+    const fallback = shop.npc ?? shop.npcs ?? shop.shopkeeper ?? shop.shopkeepers;
+    const fallbackList = fallback == null ? [] : Array.isArray(fallback) ? fallback : [fallback];
+    return [...debugnames, ...ids, ...fallbackList].filter((v) => v != null);
+  }
+
+  // Normalizes one shop's `stock` field. Confirmed real shape (from
+  // wiki.json's shop objects) is an array of
+  // { debugname, itemId, sharedTableRef, conditional, quantity } rows --
+  // notably with NO explicit price field, so shop prices always fall
+  // back to derivedShopPrice() below. The old key/value object shapes
+  // are kept as fallbacks in case a future export uses them instead.
   function normalizeShopStock(stock) {
     const rows = [];
     if (!stock) return rows;
@@ -771,8 +886,8 @@ function init(api) {
       for (const row of stock) {
         if (!row) continue;
         rows.push({
-          itemRef: row.item ?? row.itemId ?? row.id,
-          qty: row.stock ?? row.qty ?? row.quantity ?? null,
+          itemRef: row.itemId ?? row.item ?? row.debugname ?? row.id,
+          qty: row.quantity ?? row.stock ?? row.qty ?? null,
           price: row.price ?? row.cost ?? null,
         });
       }
@@ -795,20 +910,15 @@ function init(api) {
   }
 
   // Derives a sale price for a shop row when the source data doesn't
-  // give one explicitly, the same way the infobox already derives
-  // General Store Min/Max from an item's base value (see
-  // infoboxRowsForItem). This is a rough approximation for
-  // non-general-store shops -- if wiki.json ever adds a real per-shop
-  // price multiplier, swap this for that instead of the flat 0.4x guess.
+  // give one explicitly (which per the confirmed shape above is always,
+  // for now), the same way the infobox already derives General Store
+  // Min/Max from an item's base value (see infoboxRowsForItem). This is a
+  // rough approximation for non-general-store shops -- if wiki.json ever
+  // adds a real per-shop price multiplier, swap this for that instead of
+  // the flat 0.4x guess.
   function derivedShopPrice(itemEntry) {
     if (!itemEntry || itemEntry.value == null) return null;
     return Math.floor(itemEntry.value * 0.4);
-  }
-
-  function normalizeShopNpcRefs(shop) {
-    const raw = shop.npc ?? shop.npcs ?? shop.shopkeeper ?? shop.shopkeepers;
-    if (raw == null) return [];
-    return Array.isArray(raw) ? raw : [raw];
   }
 
   function buildShops() {
@@ -819,7 +929,7 @@ function init(api) {
 
     rawShops.forEach((shop, idx) => {
       const name = shop.name || `Shop ${idx + 1}`;
-      const id = `shop:${slugify(name)}-${idx}`;
+      const id = `shop:${slugify(shop.key || name)}${shop.key ? '' : `-${idx}`}`;
       const npcRefs = normalizeShopNpcRefs(shop);
       const npcEntries = npcRefs.map(resolveEntryRef).filter(Boolean);
 
@@ -941,6 +1051,18 @@ function init(api) {
     };
   }
 
+  // Finds any real "Clue scroll (...)" item entry still sitting in
+  // wikiData.entries (visibleEntries()/search already exclude it -- this
+  // only reads its sourceId) so the 3 synthesized clue pages have
+  // something to draw an icon from. All 3 tiers use the exact same
+  // in-game sprite, so any one of them is fine to borrow from.
+  function findClueSpriteSourceId() {
+    const match = wikiData.entries.find(
+      (e) => e.kind === 'item' && CLUE_ITEM_NAME_RE.test(safeName(e)) && e.sourceId != null
+    );
+    return match ? match.sourceId : null;
+  }
+
   // Builds the 3 combined clue pages (easy/medium/hard). Each pulls:
   //   - droppedBy: every NPC whose drops.tertiary has a "~clue-<tier>"
   //     row, with that row's own chance -- already the single combined
@@ -952,6 +1074,7 @@ function init(api) {
   function buildClues(npcDropIndex) {
     const raw = wikiData.sharedDropTables || {};
     const entries = [];
+    const clueSourceId = findClueSpriteSourceId();
 
     for (const tier of CLUE_TIERS) {
       const key = clueKeyForTier(tier);
@@ -971,6 +1094,7 @@ function init(api) {
         kind: 'clue',
         name: `Clue scroll (${tier})`,
         tier,
+        sourceId: clueSourceId,
         totalSteps: rawRows.length,
         bySubtype: Array.from(bySubtype.entries()).sort((a, b) => b[1] - a[1]),
         droppedBy,
@@ -1228,6 +1352,10 @@ function init(api) {
     if (entry.combatLevel != null) rows.push(['Combat level', String(entry.combatLevel)]);
     if (entry.hitpoints != null) rows.push(['Hitpoints', String(entry.hitpoints)]);
     if (entry.attackable != null) rows.push(['Attackable', entry.attackable ? 'Yes' : 'No']);
+    if (entry.respawnRate != null) rows.push(['Respawn rate', `${entry.respawnRate}`]);
+    if (entry.huntRange != null) rows.push(['Hunt range', `${entry.huntRange}`]);
+    if (entry.maxRange != null) rows.push(['Max range', `${entry.maxRange}`]);
+    if (entry.wanderRange != null) rows.push(['Wander range', `${entry.wanderRange}`]);
     return rows;
   }
 
@@ -1301,6 +1429,40 @@ function init(api) {
     `;
   }
 
+  // NPC equivalent of combatStatsHtml() above: one row of the monster's
+  // own attack/strength/magic + all 5 defence stats, labelled with its
+  // damageType as the "combat style" (e.g. slash/crush/magic/ranged).
+  function npcCombatStatsHtml(entry) {
+    if (entry.kind !== 'npc' || !entry.combat) return '';
+    const c = entry.combat;
+    const styleLabel = entry.damageType ? prettifyTableName(entry.damageType) : 'Unknown';
+
+    return `
+      <div class="wiki-section-title">Combat Stats</div>
+      <table class="wiki-bonus-table">
+        <thead>
+          <tr>
+            <th>Style</th><th>Attack</th><th>Strength</th><th>Magic</th>
+            <th>Stab Def</th><th>Slash Def</th><th>Crush Def</th><th>Magic Def</th><th>Range Def</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="wiki-bonus-row-label">${escapeHtml(styleLabel)}</td>
+            <td>${c.attack ?? 0}</td>
+            <td>${c.strength ?? 0}</td>
+            <td>${c.magic ?? 0}</td>
+            <td>${c.stabDefence ?? 0}</td>
+            <td>${c.slashDefence ?? 0}</td>
+            <td>${c.crushDefence ?? 0}</td>
+            <td>${c.magicDefence ?? 0}</td>
+            <td>${c.rangeDefence ?? 0}</td>
+          </tr>
+        </tbody>
+      </table>
+    `;
+  }
+
   function sectionHtml(title, innerHtml) {
     return `<div class="wiki-section-title">${escapeHtml(title)}</div>${innerHtml}`;
   }
@@ -1309,16 +1471,28 @@ function init(api) {
     return `<div class="wiki-empty-section">${escapeHtml(text)}</div>`;
   }
 
+  // Star toggle rendered into the top-right of every detail page's title
+  // bar. Clicking it (handled via delegated [data-star] listener in
+  // paint()) adds/removes the page from Saved Pages and repaints so the
+  // star's fill updates immediately.
+  function starButtonHtml(id) {
+    const saved = savedPageIds.has(id);
+    return `<span class="wiki-star-btn${
+      saved ? ' wiki-star-active' : ''
+    }" data-star="${id}" title="${saved ? 'Remove from Saved Pages' : 'Save this page'}">&#9733;</span>`;
+  }
+
   // ---- shared two-line drop/stock row builder ----
   //
   // Every "item + quantity + rarity/price" listing in the wiki (item
-  // Dropped By / Shop Locations, NPC Drops, shop Stock, shared drop-table
-  // Table Contents, clue Dropped By / Scroll Steps) renders through this
+  // Dropped By / Shop Locations, NPC Drops, shared drop-table Table
+  // Contents, clue Dropped By / Scroll Steps) renders through this
   // instead of a <table>: icon + name on the first line, quantity and
   // rarity/price as a quiet two-column line underneath. This is what
   // fixed the King Black Dragon-style overflow (long names + wide "#"/
   // "Rarity" columns squeezing past the panel edge) and leaves room for
-  // the sprite icon on every row.
+  // the sprite icon on every row. (The shop page's own Stock section
+  // uses a real <table> instead -- see shopDetailHtml.)
   function dropRowIconHtml(entry) {
     if (!entry) return '';
     if (hasSprite(entry)) return spriteCanvasHtml(entry, null, 'wiki-drop-icon');
@@ -1462,20 +1636,26 @@ function init(api) {
   }
 
   // ---- shop page ----
+  //
+  // Per plan, the shop's Stock is rendered as a real <table> (Item /
+  // Stock / Cost columns) rather than the drop-row stack used elsewhere,
+  // since a shop's stock is a flat price list, not a rarity table.
 
   function shopDetailHtml(shopEntry) {
     const keeperLinks = shopEntry.shopkeepers.length
       ? shopEntry.shopkeepers.map((n) => linkHtml(n)).join(', ')
       : 'Unknown';
+
     const rows = shopEntry.stockRows
       .map((row) => {
         const label = row.itemEntry ? linkHtml(row.itemEntry) : escapeHtml(String(row.itemRef));
-        return dropRowHtml({
-          iconHtml: dropRowIconHtml(row.itemEntry),
-          nameHtml: label,
-          qtyLabel: row.qty != null ? `Stock: ${row.qty}` : null,
-          oddsLabel: row.price != null ? `${row.price.toLocaleString()} gp` : null,
-        });
+        const icon = dropRowIconHtml(row.itemEntry);
+        return `
+          <tr>
+            <td class="wiki-shop-col-item"><span class="wiki-shop-item-inner">${icon}${label}</span></td>
+            <td class="wiki-shop-col-num">${row.qty != null ? Number(row.qty).toLocaleString() : '&mdash;'}</td>
+            <td class="wiki-shop-col-num">${row.price != null ? `${Number(row.price).toLocaleString()} gp` : '&mdash;'}</td>
+          </tr>`;
       })
       .join('');
 
@@ -1484,17 +1664,22 @@ function init(api) {
         <div class="wiki-page-title">
           ${escapeHtml(shopEntry.name)}
           <span class="wiki-page-kind">Shop</span>
+          ${starButtonHtml(shopEntry.id)}
         </div>
         <div class="wiki-infobox">
           <div class="wiki-infobox-header">${escapeHtml(shopEntry.name)}</div>
           <table class="wiki-infobox-table">
             <tr><td class="wiki-infobox-label">Shopkeeper</td><td class="wiki-infobox-value">${keeperLinks}</td></tr>
+            <tr><td class="wiki-infobox-label">Items sold</td><td class="wiki-infobox-value">${shopEntry.stockRows.length}</td></tr>
           </table>
         </div>
         ${sectionHtml(
           'Stock',
           shopEntry.stockRows.length
-            ? `<div class="wiki-drop-list">${rows}</div>`
+            ? `<table class="wiki-shop-table">
+                 <thead><tr><th>Item</th><th class="wiki-shop-col-num">Stock</th><th class="wiki-shop-col-num">Cost</th></tr></thead>
+                 <tbody>${rows}</tbody>
+               </table>`
             : emptySection('No stock data available.')
         )}
       </div>
@@ -1556,6 +1741,7 @@ function init(api) {
         <div class="wiki-page-title">
           ${escapeHtml(tableEntry.name)}
           <span class="wiki-page-kind">Drop Table</span>
+          ${starButtonHtml(tableEntry.id)}
         </div>
         ${sectionHtml(
           'Table Contents',
@@ -1592,11 +1778,20 @@ function init(api) {
       )
       .join('');
 
+    const iconInner = hasSprite(clueEntry)
+      ? spriteCanvasHtml(clueEntry, null, 'wiki-infobox-sprite-canvas')
+      : iconLetter(clueEntry);
+
     return `
       <div class="wiki-detail">
         <div class="wiki-page-title">
           ${escapeHtml(clueEntry.name)}
           <span class="wiki-page-kind">Clue Scroll</span>
+          ${starButtonHtml(clueEntry.id)}
+        </div>
+        <div class="wiki-infobox">
+          <div class="wiki-infobox-header">${escapeHtml(clueEntry.name)}</div>
+          <div class="wiki-infobox-icon">${iconInner}</div>
         </div>
         ${sectionHtml(
           'Dropped By',
@@ -1615,18 +1810,19 @@ function init(api) {
     `;
   }
 
-  // Infobox is always first, then any stats sections below it (currently
-  // just Combat Stats for equippable items, plus the new Shop
-  // Locations / Ground Spawns / Dropped By sections for items and Drops
-  // / Runs Shop for NPCs). Actions/"wear" pills have been removed
-  // entirely, and the examine text has moved into the infobox (see
-  // infoboxHtml above) rather than sitting up here.
+  // Infobox is always first, then any stats sections below it (Combat
+  // Stats for equippable items / NPCs, plus Shop Locations / Ground
+  // Spawns / Dropped By for items and Drops / Runs Shop for NPCs).
+  // Actions/"wear" pills have been removed entirely, and the examine
+  // text has moved into the infobox (see infoboxHtml above) rather than
+  // sitting up here. Every page kind also gets a Saved Pages star in its
+  // title bar (see starButtonHtml).
   function detailHtml(entry) {
     if (entry.kind === 'shop') return shopDetailHtml(entry);
     if (entry.kind === 'droptable') return dropTableDetailHtml(entry);
     if (entry.kind === 'clue') return clueDetailHtml(entry);
 
-    const stats = combatStatsHtml(entry);
+    const stats = entry.kind === 'npc' ? npcCombatStatsHtml(entry) : combatStatsHtml(entry);
     const extraSections =
       entry.kind === 'npc'
         ? [npcDropsHtml(entry), npcShopRefHtml(entry)]
@@ -1637,6 +1833,7 @@ function init(api) {
         <div class="wiki-page-title">
           ${escapeHtml(safeName(entry))}
           <span class="wiki-page-kind">${entry.kind === 'npc' ? 'NPC' : 'Item'}</span>
+          ${starButtonHtml(entry.id)}
         </div>
         ${infoboxHtml(entry)}
         ${stats ? `<div class="wiki-page-main">${stats}</div>` : ''}
@@ -1652,6 +1849,7 @@ function init(api) {
     const npcs = visible.filter((e) => e.kind === 'npc').length;
     const shops = derived ? derived.shops.entries.length : 0;
     const tables = derived ? derived.dropTables.entries.length + derived.clues.length : 0;
+    const saved = savedPageIds.size;
     return `
       <div class="wiki-home">
         <div class="wiki-home-title">Oldrune Wiki</div>
@@ -1663,11 +1861,28 @@ function init(api) {
           <div class="wiki-home-stat"><b>${npcs}</b> NPCs</div>
           <div class="wiki-home-stat"><b>${shops}</b> shops</div>
           <div class="wiki-home-stat"><b>${tables}</b> drop tables</div>
+          <div class="wiki-home-stat"><b>${saved}</b> saved</div>
         </div>
-        <button class="wiki-home-browse-btn" id="wiki-browse-all">Browse all</button>
+        <div class="wiki-home-browse-grid">
+          <button class="wiki-home-browse-btn" data-category="all">Browse All</button>
+          <button class="wiki-home-browse-btn wiki-home-browse-btn-secondary" data-category="item">Browse Items</button>
+          <button class="wiki-home-browse-btn wiki-home-browse-btn-secondary" data-category="npc">Browse NPCs</button>
+          <button class="wiki-home-browse-btn wiki-home-browse-btn-secondary" data-category="shop">Browse Shops</button>
+          <button class="wiki-home-browse-btn wiki-home-browse-btn-secondary" data-category="droptable">Browse Drop Tables</button>
+          <button class="wiki-home-browse-btn wiki-home-browse-btn-secondary" data-category="saved">Saved Pages</button>
+        </div>
       </div>
     `;
   }
+
+  const CATEGORY_LABELS = {
+    all: 'All entries',
+    item: 'Items',
+    npc: 'NPCs',
+    shop: 'Shops',
+    droptable: 'Drop tables',
+    saved: 'Saved pages',
+  };
 
   function renderWiki(container, exit) {
     ensureStyleInjected();
@@ -1678,7 +1893,7 @@ function init(api) {
     // their own history entry) instead of collapsing straight back to
     // search/home like the old two-level back logic did.
     function pushHistory() {
-      navStack.push({ openEntryId, browseAll, searchText });
+      navStack.push({ openEntryId, browseCategory, searchText });
     }
 
     // Clicking the "Wiki" panel title always jumps straight to the home
@@ -1686,7 +1901,7 @@ function init(api) {
     function goHome() {
       navStack = [];
       openEntryId = null;
-      browseAll = false;
+      browseCategory = null;
       searchText = '';
       paint();
     }
@@ -1695,12 +1910,12 @@ function init(api) {
       if (navStack.length) {
         const prev = navStack.pop();
         openEntryId = prev.openEntryId;
-        browseAll = prev.browseAll;
+        browseCategory = prev.browseCategory;
         searchText = prev.searchText;
         paint();
         return;
       }
-      if (openEntryId || browseAll || searchText) {
+      if (openEntryId || browseCategory || searchText) {
         goHome();
         return;
       }
@@ -1757,10 +1972,20 @@ function init(api) {
             paint();
           });
         });
+        // Saved Pages star toggle — delegated the same way as [data-open]
+        // links above. Doesn't push nav history since it's not a
+        // navigation action.
+        root.querySelectorAll('[data-star]').forEach((btn) => {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleSaved(btn.dataset.star);
+            paint();
+          });
+        });
         return;
       }
 
-      const showingList = browseAll || searchText.trim().length > 0;
+      const showingList = browseCategory != null || searchText.trim().length > 0;
 
       root.innerHTML = `
         <div class="wiki-search-wrap">
@@ -1780,14 +2005,13 @@ function init(api) {
       `;
 
       if (!showingList) {
-        const browseAllBtn = root.querySelector('#wiki-browse-all');
-        if (browseAllBtn) {
-          browseAllBtn.addEventListener('click', () => {
+        root.querySelectorAll('[data-category]').forEach((btn) => {
+          btn.addEventListener('click', () => {
             pushHistory();
-            browseAll = true;
+            browseCategory = btn.dataset.category;
             paint();
           });
-        }
+        });
       }
 
       const searchInput = root.querySelector('#wiki-search');
@@ -1808,11 +2032,11 @@ function init(api) {
         // page (first keystroke), not on every keystroke thereafter —
         // otherwise Back would step through the typed text letter by
         // letter instead of returning to the home page.
-        const wasHome = !openEntryId && !browseAll && !searchText.trim();
+        const wasHome = !openEntryId && !browseCategory && !searchText.trim();
         const newValue = searchInput.value;
         if (wasHome && newValue.trim()) pushHistory();
         searchText = newValue;
-        if (searchText.trim()) browseAll = false;
+        if (searchText.trim()) browseCategory = null;
         // A fresh keystroke changes whether we're in list view or home view,
         // so this needs a full repaint, not just a list refresh.
         paint();
@@ -1836,7 +2060,10 @@ function init(api) {
       let matches;
       let pool;
       try {
-        pool = allEntries();
+        // Typing a search always searches across every page kind; a
+        // selected browse category only applies when there's no active
+        // search text (see showingList / input handler above).
+        pool = q ? allEntries() : filterByCategory(allEntries(), browseCategory);
         matches = pool.filter((e) => matchesSearch(e, q)).slice(0, 200);
       } catch (err) {
         api.warn('[wiki] search error:', err);
@@ -1850,7 +2077,7 @@ function init(api) {
       if (label) {
         label.textContent = q
           ? `${matches.length} result${matches.length === 1 ? '' : 's'}`
-          : `All entries (${Math.min(pool.length, 200)} of ${pool.length} shown)`;
+          : `${CATEGORY_LABELS[browseCategory] || 'All entries'} (${Math.min(pool.length, 200)} of ${pool.length} shown)`;
       }
 
       listEl.innerHTML = matches.length
@@ -1896,7 +2123,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
-  version: '1.5.0',
+  version: '1.6.0',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
