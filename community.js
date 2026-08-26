@@ -558,7 +558,7 @@ export default {
   id: 'community-hub',
   name: 'Community Hub',
   description: 'Discord, website, and vote-site shortcuts with in-client voting and a 12h cooldown tracker.',
-  version: '1.0.4',
+  version: '1.0.5',
   author: 'goku',
   native: true,
   icon: 'Community.png',
