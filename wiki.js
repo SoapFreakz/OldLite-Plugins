@@ -91,6 +91,53 @@
 //     single arrow past certain stack sizes). The wiki only ever shows
 //     one static icon per item, so there's no stack count to vary on. If
 //     that's wanted somewhere, it needs to be wired in separately.
+//
+// v1.4 changes -- shops, drop tables, clue combining:
+//   - wiki.json now (per the rebuilt scripts/build-wiki-data.js) carries
+//     two new top-level keys alongside `entries`: `shops` (array) and
+//     `sharedDropTables` (object keyed by table name -- randomherb,
+//     randomjewel, ultrarare_getitem, megararetable, clue-easy,
+//     clue-medium, clue-hard). NPC entries also now carry a `drops`
+//     object: `{ main: [...], tertiary: [...] }`, where a tertiary entry
+//     whose `item` string starts with `~` (e.g. "~clue-easy") is a
+//     pointer into `sharedDropTables` rather than a real item.
+//   - This file does NOT hardcode the exact inner shape of a shop/table
+//     row beyond what was confirmed in the planning discussion (shop:
+//     { name, npc, stock }, stock keyed by item id with either a bare
+//     qty or a { qty, price } object; shared table rows: { item, weight }
+//     with optional per-table `rollBase` / `rollBaseRingOfWealth`, and a
+//     rare floor-conditional row shaped like
+//     "aboveground = <id> | underground = <id>" for the talisman slot).
+//     Every lookup below (normalizeShopStock, normalizeDropTableRow,
+//     resolveEntryRef, etc.) is written defensively against a couple of
+//     plausible field-name variants for exactly this reason -- if
+//     something renders as "Unknown"/blank, that's the signal the real
+//     wiki.json uses a field name this file isn't checking yet, not that
+//     the row doesn't exist. Paste one real shop/table/drops object and
+//     the relevant normalize* function is the only thing that needs to
+//     change.
+//   - New page kinds: 'shop', 'droptable', 'clue'. These are synthesized
+//     in buildDerived() (not present in wikiData.entries itself) and
+//     merged into search/browse/detail lookup alongside the real
+//     item/npc entries -- see allEntries().
+//   - The old standalone "Clue Scroll" item page(s) are dropped from
+//     visibleEntries() (name match, see CLUE_ITEM_NAME_RE) in favour of
+//     three synthesized 'clue' pages (easy/medium/hard). Each shows (a)
+//     which monsters drop that tier and at what combined odds -- read
+//     straight off each NPC's `drops.tertiary` entry, which per the
+//     Lost City data is already the single combined per-tier chance, not
+//     the per-step chance -- and (b) the tier's own scroll contents from
+//     `sharedDropTables['clue-<tier>']`, grouped by clue sub-type
+//     (map/simple/vague/sextant/riddle/anagram/coordinate/cryptic) so it
+//     reads as "14 anagram clues" instead of 14 separate rows. Sub-type
+//     is read off a `subtype`/`type` field on the row if present,
+//     otherwise guessed from the row's item name -- see CLUE_SUBTYPE_RE.
+//   - Explicit-reference hyperlinks only: item/shop/npc/table names that
+//     we already have a resolved id for (a shop's stock row, a drop
+//     table's item row, a monster's drops row, etc.) are clickable and
+//     open that page. Free-text "any word that happens to match a page
+//     title" auto-linking was intentionally skipped per plan -- that's a
+//     separate, bigger pass over arbitrary description/examine text.
 
 const WIKI_DATA_URL =
   'https://raw.githubusercontent.com/SoapFreakz/OldLite-Plugins/main/wiki-data/wiki.json';
@@ -166,6 +213,9 @@ const WIKI_STYLE = `
   }
   .wiki-row-icon-item { background: var(--ol-accent); }
   .wiki-row-icon-npc { background: #c96a4a; }
+  .wiki-row-icon-shop { background: #4a8fc9; }
+  .wiki-row-icon-droptable { background: #8a5fc9; }
+  .wiki-row-icon-clue { background: #c9a44a; }
   .wiki-row-sprite {
     flex-shrink: 0; display: block; width: 1.9em; height: 1.9em; border-radius: 0.4em;
     background: var(--ol-bg); image-rendering: pixelated; image-rendering: crisp-edges;
@@ -247,6 +297,31 @@ const WIKI_STYLE = `
   .wiki-other-bonuses { display: flex; flex-wrap: wrap; gap: 0.5em 1.3em; margin-top: 0.5em; }
   .wiki-other-bonus { font-size: 0.85em; color: var(--ol-text-secondary); }
   .wiki-other-bonus b { color: var(--ol-accent); }
+
+  /* ---------- generic data tables: shop stock, drops, drop-table rows ---------- */
+  .wiki-data-table { width: 100%; border-collapse: collapse; font-size: 0.9em; margin-bottom: 0.4em; }
+  .wiki-data-table th, .wiki-data-table td {
+    border-top: 1px solid #241f14; padding: 0.4em 0.55em; text-align: left; vertical-align: middle;
+  }
+  .wiki-data-table th {
+    background: var(--ol-panel-bg); color: var(--ol-text-tertiary); font-weight: 600;
+    border-top: none; white-space: nowrap;
+  }
+  .wiki-data-table tr:nth-child(even) td { background: var(--ol-bg); }
+  .wiki-data-table td.wiki-data-num { text-align: right; color: var(--ol-text); white-space: nowrap; }
+  .wiki-data-table td.wiki-data-name { color: var(--ol-text); }
+  .wiki-link {
+    color: var(--ol-accent); cursor: pointer; text-decoration: none;
+  }
+  .wiki-link:hover { text-decoration: underline; }
+  .wiki-subnote {
+    color: var(--ol-text-tertiary); font-size: 0.85em; font-style: italic; margin: -0.2em 0 0.6em;
+  }
+  .wiki-empty-section {
+    color: var(--ol-text-tertiary); font-size: 0.9em; font-style: italic; padding: 0.3em 0 0.6em;
+  }
+  .wiki-plain-list { margin: 0 0 0.6em; padding-left: 1.2em; color: var(--ol-text); font-size: 0.9em; }
+  .wiki-plain-text { color: var(--ol-text); font-size: 0.9em; margin-bottom: 0.6em; }
 
 `;
 
@@ -497,7 +572,9 @@ function init(api) {
   }
 
   function visibleEntries() {
-    const flaggedRemoved = wikiData.entries.filter((e) => !isNotedItem(e));
+    const flaggedRemoved = wikiData.entries.filter(
+      (e) => !isNotedItem(e) && !(e.kind === 'item' && CLUE_ITEM_NAME_RE.test(safeName(e)))
+    );
     return dedupeNotedItems(flaggedRemoved);
   }
 
@@ -506,8 +583,507 @@ function init(api) {
     return safeName(entry).toLowerCase().includes(q);
   }
 
+  // -----------------------------------------------------------------
+  // Shops / drop tables / clue combining
+  //
+  // Everything in this section is derived, once, from wikiData after it
+  // loads (see ensureDerived()), and cached in `derived` for the rest of
+  // the panel's lifetime. Nothing here mutates wikiData.entries itself --
+  // shop/droptable/clue pages are synthetic entries that live alongside
+  // it (see allEntries()).
+  // -----------------------------------------------------------------
+  let derived = null;
+
+  const CLUE_TIERS = ['easy', 'medium', 'hard'];
+  // Matches the old standalone "Clue Scroll" / "Clue scroll (easy)" item
+  // page(s) so they can be dropped from visibleEntries() in favour of the
+  // 3 synthesized clue pages below. If losthq's item names for these
+  // don't actually start with "clue scroll", tell me the exact name and
+  // this regex is the only thing that needs to change.
+  const CLUE_ITEM_NAME_RE = /^clue scroll\b/i;
+  const CLUE_SUBTYPE_RE = /\b(map|simple|vague|sextant|riddle|anagram|coordinate|cryptic|challenge)\b/i;
+
+  function slugify(str) {
+    return String(str ?? '')
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'unknown';
+  }
+
+  // Resolves a reference to something in wikiData.entries. Refs in
+  // shops/sharedDropTables/drops may come through as an already-resolved
+  // entry id (the common case, since the build script resolves debugnames
+  // up front), a raw debugname string, or occasionally a bare display
+  // name -- so this tries all three before giving up.
+  function resolveEntryRef(ref) {
+    if (ref == null) return null;
+    if (typeof ref === 'object') {
+      // Some rows may already carry an inline { id } / { name } shape
+      // rather than a plain string ref.
+      if (ref.id) return resolveEntryRef(ref.id);
+      if (ref.name) return resolveEntryRef(ref.name);
+      return null;
+    }
+    const raw = String(ref).trim();
+    if (!raw) return null;
+    const byId = wikiData.entries.find((e) => e.id === raw);
+    if (byId) return byId;
+    const byDebugname = wikiData.entries.find(
+      (e) => e.debugname === raw || e.debugName === raw
+    );
+    if (byDebugname) return byDebugname;
+    const byName = wikiData.entries.find(
+      (e) => safeName(e).toLowerCase() === raw.toLowerCase()
+    );
+    if (byName) return byName;
+    return null;
+  }
+
+  // A "~tablename" tertiary reference points at sharedDropTables instead
+  // of a real item.
+  function isSharedTableRef(item) {
+    return typeof item === 'string' && item.trim().startsWith('~');
+  }
+  function sharedTableRefKey(item) {
+    return String(item).trim().slice(1);
+  }
+
+  function clueKeyForTier(tier) {
+    return `clue-${tier}`;
+  }
+  function clueTierFromTableKey(key) {
+    const m = /^clue-(easy|medium|hard)$/i.exec(String(key || '').trim());
+    return m ? m[1].toLowerCase() : null;
+  }
+
+  // Floor-conditional rows (currently only ever seen on the nature/chaos
+  // talisman slot in randomjewel) come through as a single string like
+  // "aboveground = nature_talisman | underground = chaos_talisman"
+  // instead of a plain item ref. Parsed into { aboveground, underground }
+  // refs, or null if the row isn't one of these.
+  function parseFloorConditionalRef(item) {
+    if (typeof item !== 'string' || item.indexOf('=') === -1) return null;
+    const parts = item.split('|').map((p) => p.trim());
+    const out = {};
+    let matched = false;
+    for (const part of parts) {
+      const m = /^(\w+)\s*=\s*(.+)$/.exec(part);
+      if (!m) continue;
+      const key = m[1].toLowerCase();
+      if (key === 'aboveground' || key === 'underground') {
+        out[key] = m[2].trim();
+        matched = true;
+      }
+    }
+    return matched ? out : null;
+  }
+
+  function formatChance(row) {
+    // Rows may express odds as chance ("1/128"), weight (needs a
+    // rollBase from the parent table), or probability (0-1 float).
+    if (row.chance != null) return String(row.chance);
+    if (row.probability != null) {
+      const p = Number(row.probability);
+      if (Number.isFinite(p) && p > 0) return `1/${Math.round(1 / p)}`;
+    }
+    return null;
+  }
+
+  function formatWeightAsOdds(weight, rollBase) {
+    if (weight == null || !rollBase) return null;
+    const w = Number(weight);
+    if (!Number.isFinite(w) || w <= 0) return null;
+    // Not a clean 1/N in general (weighted tables), so show it as N/base
+    // reduced to 1/x only when it divides evenly, else "w/base".
+    if (rollBase % w === 0) return `1/${rollBase / w}`;
+    return `${w}/${rollBase}`;
+  }
+
+  // Normalizes one shop's `stock` field. Supports the two shapes we
+  // expect the build script to plausibly produce:
+  //   { "item-556": 10 }                         (bare qty)
+  //   { "item-556": { qty: 10, price: 200 } }     (qty + explicit price)
+  //   [ { item: "item-556", stock: 10, price: 200 } ]  (array form)
+  function normalizeShopStock(stock) {
+    const rows = [];
+    if (!stock) return rows;
+    if (Array.isArray(stock)) {
+      for (const row of stock) {
+        if (!row) continue;
+        rows.push({
+          itemRef: row.item ?? row.itemId ?? row.id,
+          qty: row.stock ?? row.qty ?? row.quantity ?? null,
+          price: row.price ?? row.cost ?? null,
+        });
+      }
+      return rows;
+    }
+    if (typeof stock === 'object') {
+      for (const [itemRef, val] of Object.entries(stock)) {
+        if (val != null && typeof val === 'object') {
+          rows.push({
+            itemRef,
+            qty: val.qty ?? val.stock ?? val.quantity ?? null,
+            price: val.price ?? val.cost ?? null,
+          });
+        } else {
+          rows.push({ itemRef, qty: val, price: null });
+        }
+      }
+    }
+    return rows;
+  }
+
+  // Derives a sale price for a shop row when the source data doesn't
+  // give one explicitly, the same way the infobox already derives
+  // General Store Min/Max from an item's base value (see
+  // infoboxRowsForItem). This is a rough approximation for
+  // non-general-store shops -- if wiki.json ever adds a real per-shop
+  // price multiplier, swap this for that instead of the flat 0.4x guess.
+  function derivedShopPrice(itemEntry) {
+    if (!itemEntry || itemEntry.value == null) return null;
+    return Math.floor(itemEntry.value * 0.4);
+  }
+
+  function normalizeShopNpcRefs(shop) {
+    const raw = shop.npc ?? shop.npcs ?? shop.shopkeeper ?? shop.shopkeepers;
+    if (raw == null) return [];
+    return Array.isArray(raw) ? raw : [raw];
+  }
+
+  function buildShops() {
+    const rawShops = Array.isArray(wikiData.shops) ? wikiData.shops : [];
+    const entries = [];
+    const byItemId = new Map(); // itemEntry.id -> [{ shopEntry, qty, price }]
+    const byNpcId = new Map(); // npcEntry.id -> [shopEntry]
+
+    rawShops.forEach((shop, idx) => {
+      const name = shop.name || `Shop ${idx + 1}`;
+      const id = `shop:${slugify(name)}-${idx}`;
+      const npcRefs = normalizeShopNpcRefs(shop);
+      const npcEntries = npcRefs.map(resolveEntryRef).filter(Boolean);
+
+      const stockRows = normalizeShopStock(shop.stock).map((row) => {
+        const itemEntry = resolveEntryRef(row.itemRef);
+        const price = row.price != null ? row.price : derivedShopPrice(itemEntry);
+        return { itemEntry, itemRef: row.itemRef, qty: row.qty, price };
+      });
+
+      const shopEntry = {
+        id,
+        kind: 'shop',
+        name,
+        shopkeepers: npcEntries,
+        stockRows,
+      };
+      entries.push(shopEntry);
+
+      for (const row of stockRows) {
+        if (!row.itemEntry) continue;
+        if (!byItemId.has(row.itemEntry.id)) byItemId.set(row.itemEntry.id, []);
+        byItemId.get(row.itemEntry.id).push({ shopEntry, qty: row.qty, price: row.price });
+      }
+      for (const npcEntry of npcEntries) {
+        if (!byNpcId.has(npcEntry.id)) byNpcId.set(npcEntry.id, []);
+        byNpcId.get(npcEntry.id).push(shopEntry);
+      }
+    });
+
+    return { entries, byItemId, byNpcId };
+  }
+
+  // Builds one 'droptable' page per sharedDropTables key EXCEPT the 3
+  // clue tables, which get folded into buildClues() instead.
+  //
+  // Confirmed real shape (from wiki.json's sharedDropTables.randomherb/
+  // randomjewel/ultrarare_getitem/megararetable):
+  //   { key, name, rollBase, rollBaseRingOfWealth, rollTable: [
+  //       { debugname, itemId, sharedTableRef, conditional, quantity,
+  //         chance, note }
+  //   ] }
+  // Rows are already resolved (itemId is a real entry id like "item-199",
+  // sharedTableRef is a bare table key like "megararetable" with no "~"
+  // prefix) and quantity is a single number, not a range string --
+  // notably different from how NPC drops.roll_table rows are shaped (see
+  // parseDropItemField), so this does NOT reuse that parser.
+  function buildDropTables() {
+    const raw = wikiData.sharedDropTables || {};
+    const entries = [];
+    const byKey = new Map(); // tableKey -> entry
+
+    for (const [key, table] of Object.entries(raw)) {
+      if (clueTierFromTableKey(key)) continue; // handled by buildClues()
+      const rollBase = table.rollBase ?? null;
+      const rollBaseRingOfWealth = table.rollBaseRingOfWealth ?? null;
+      const rawRows = table.rollTable ?? [];
+
+      const rows = rawRows.map((row) => normalizeDropTableRow(row, rollBase));
+
+      const entry = {
+        id: `droptable:${slugify(key)}`,
+        kind: 'droptable',
+        name: table.name || prettifyTableName(key),
+        tableKey: key,
+        rollBase,
+        rollBaseRingOfWealth,
+        rows,
+      };
+      entries.push(entry);
+      byKey.set(key, entry);
+    }
+
+    return { entries, byKey };
+  }
+
+  function prettifyTableName(key) {
+    return String(key)
+      .replace(/[_-]+/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  // A single normalized row out of a sharedDropTables.<key>.rollTable
+  // entry: either a real item (resolved via itemId), a pointer to
+  // another shared table (sharedTableRef), or a floor-conditional pair
+  // (conditional: true, the "aboveground = x | underground = y" string
+  // living in `debugname` since itemId/sharedTableRef are both null on
+  // those rows).
+  function normalizeDropTableRow(row, rollBase) {
+    const odds = formatWeightAsOdds(Number(row.chance), rollBase) || (row.chance != null ? `${row.chance}/${rollBase}` : null);
+
+    if (row.conditional) {
+      const floorConditional = parseFloorConditionalRef(row.debugname);
+      return {
+        floorConditional: floorConditional
+          ? {
+              aboveground: resolveEntryRef(floorConditional.aboveground),
+              underground: resolveEntryRef(floorConditional.underground),
+            }
+          : null,
+        odds,
+        note: row.note || null,
+      };
+    }
+
+    if (row.sharedTableRef) {
+      return {
+        tableRef: row.sharedTableRef,
+        odds,
+        note: row.note || null,
+      };
+    }
+
+    return {
+      itemEntry: resolveEntryRef(row.itemId),
+      itemRef: row.itemId ?? row.debugname,
+      odds,
+      qty: row.quantity,
+      note: row.note || null,
+    };
+  }
+
+  // Builds the 3 combined clue pages (easy/medium/hard). Each pulls:
+  //   - droppedBy: every NPC whose drops.tertiary has a "~clue-<tier>"
+  //     row, with that row's own chance -- already the single combined
+  //     per-tier odds per the Lost City data, not per clue-step.
+  //   - contents: the tier's sharedDropTables['clue-<tier>'].rollTable
+  //     rows (same shape as any other shared table -- debugname/itemId/
+  //     quantity/chance/note), grouped by sub-type into counts instead
+  //     of one row each.
+  function buildClues(npcDropIndex) {
+    const raw = wikiData.sharedDropTables || {};
+    const entries = [];
+
+    for (const tier of CLUE_TIERS) {
+      const key = clueKeyForTier(tier);
+      const table = raw[key];
+      const rawRows = table ? table.rollTable ?? [] : [];
+
+      const bySubtype = new Map(); // subtype -> count
+      for (const row of rawRows) {
+        const subtype = clueRowSubtype(row);
+        bySubtype.set(subtype, (bySubtype.get(subtype) || 0) + 1);
+      }
+
+      const droppedBy = (npcDropIndex.byTertiaryTable.get(key) || []).slice();
+
+      entries.push({
+        id: `clue:${tier}`,
+        kind: 'clue',
+        name: `Clue scroll (${tier})`,
+        tier,
+        totalSteps: rawRows.length,
+        bySubtype: Array.from(bySubtype.entries()).sort((a, b) => b[1] - a[1]),
+        droppedBy,
+      });
+    }
+
+    return entries;
+  }
+
+  // Sub-type is guessed from the row's note/debugname (e.g. "Unidentified
+  // Guam", "Cryptic clue (easy)") since the confirmed sharedDropTables
+  // row shape has no dedicated subtype/type field of its own.
+  function clueRowSubtype(row) {
+    const explicit = row.subtype || row.type;
+    if (explicit) return prettifyTableName(explicit);
+    const text = row.note || row.debugname || '';
+    const m = CLUE_SUBTYPE_RE.exec(text);
+    return m ? prettifyTableName(m[1]) : 'Other';
+  }
+
+  // Splits a drop row's `item` field into { ref, qty, isTable }.
+  // Confirmed real shape (from a King Black Dragon drops dump):
+  //   roll_table row: { item: ["rune_longsword", 1], chance: "10" }
+  //   roll_table row (shared-table pointer): { item: "~ultrarare_getitem", chance: "8" }
+  //   always row:     { item: ["dragon_bones", 1] }               (no chance -- 100%)
+  //   tertiary row:   { item: "~clue-hard", chance: "1/128" }      (pre-formatted fraction)
+  // So `item` is an [debugname, qty] pair for real items, or a bare
+  // "~tablekey" string for shared-table pointers. qty itself can be a
+  // plain number or a range string like "1-2".
+  function parseDropItemField(item) {
+    if (isSharedTableRef(item)) {
+      return { isTable: true, tableKey: sharedTableRefKey(item) };
+    }
+    if (Array.isArray(item)) {
+      return { isTable: false, ref: item[0], qty: item[1] };
+    }
+    // Fallback for any row that turns out to just be a bare debugname
+    // string with no qty wrapper.
+    return { isTable: false, ref: item, qty: null };
+  }
+
+  function parseQtyRange(qty) {
+    if (qty == null) return { min: null, max: null };
+    if (typeof qty === 'number') return { min: qty, max: qty };
+    const m = /^(\d+)\s*-\s*(\d+)$/.exec(String(qty).trim());
+    if (m) return { min: Number(m[1]), max: Number(m[2]) };
+    const n = Number(qty);
+    return Number.isFinite(n) ? { min: n, max: n } : { min: null, max: null };
+  }
+
+  // roll_table/always rows carry `chance` as a plain weight number
+  // string (e.g. "10") out of the NPC's own drops.roll_base -- NOT a
+  // pre-formatted "1/128" fraction like tertiary rows use. This tells
+  // formatChance()/formatWeightAsOdds() apart for the two cases.
+  function formatRollTableOdds(row, rollBase) {
+    if (row.chance == null) return '100% (always)';
+    // tertiary rows already come through as "1/128" style strings --
+    // pass those through untouched rather than trying to treat them as
+    // a weight.
+    if (typeof row.chance === 'string' && row.chance.includes('/')) return row.chance;
+    return formatWeightAsOdds(Number(row.chance), rollBase) || `${row.chance}/${rollBase}`;
+  }
+
+  // Walks every NPC's drops.roll_table / drops.always / drops.tertiary
+  // once and builds two reverse indices used across item/table/clue
+  // pages:
+  //   - byItemId: itemEntry.id -> [{ npcEntry, odds, min, max }]
+  //   - byTertiaryTable: sharedDropTables key -> [{ npcEntry, odds }]
+  function buildNpcDropIndex() {
+    const byItemId = new Map();
+    const byTertiaryTable = new Map();
+
+    for (const entry of wikiData.entries) {
+      if (entry.kind !== 'npc' || !entry.drops) continue;
+      const rollBase = entry.drops.roll_base ?? entry.drops.rollBase ?? null;
+      const rollRows = entry.drops.roll_table ?? entry.drops.rollTable ?? [];
+      const alwaysRows = entry.drops.always ?? [];
+      const tertiaryRows = entry.drops.tertiary ?? [];
+
+      const addTableRef = (tableKey, odds) => {
+        if (!byTertiaryTable.has(tableKey)) byTertiaryTable.set(tableKey, []);
+        byTertiaryTable.get(tableKey).push({ npcEntry: entry, odds });
+      };
+      const addItem = (itemEntry, odds, qty) => {
+        if (!byItemId.has(itemEntry.id)) byItemId.set(itemEntry.id, []);
+        byItemId.get(itemEntry.id).push({ npcEntry: entry, odds, min: qty.min, max: qty.max });
+      };
+
+      for (const row of rollRows) {
+        const parsed = parseDropItemField(row.item);
+        const odds = formatRollTableOdds(row, rollBase);
+        if (parsed.isTable) {
+          addTableRef(parsed.tableKey, odds);
+          continue;
+        }
+        const itemEntry = resolveEntryRef(parsed.ref);
+        if (!itemEntry) continue;
+        addItem(itemEntry, odds, parseQtyRange(parsed.qty));
+      }
+
+      for (const row of alwaysRows) {
+        const parsed = parseDropItemField(row.item);
+        if (parsed.isTable) {
+          addTableRef(parsed.tableKey, '100% (always)');
+          continue;
+        }
+        const itemEntry = resolveEntryRef(parsed.ref);
+        if (!itemEntry) continue;
+        addItem(itemEntry, '100% (always)', parseQtyRange(parsed.qty));
+      }
+
+      for (const row of tertiaryRows) {
+        const parsed = parseDropItemField(row.item);
+        const odds = formatChance(row); // already "1/128"-style here
+        if (parsed.isTable) {
+          addTableRef(parsed.tableKey, odds);
+          continue;
+        }
+        const itemEntry = resolveEntryRef(parsed.ref);
+        if (!itemEntry) continue;
+        addItem(itemEntry, odds, parseQtyRange(parsed.qty));
+      }
+    }
+
+    return { byItemId, byTertiaryTable };
+  }
+
+  function ensureDerived() {
+    if (derived || !wikiData) return;
+    const npcDropIndex = buildNpcDropIndex();
+    const shops = buildShops();
+    const dropTables = buildDropTables();
+    const clues = buildClues(npcDropIndex);
+    derived = { npcDropIndex, shops, dropTables, clues };
+  }
+
+  // All browsable/searchable/openable pages: the real item/npc entries
+  // (minus the ones visibleEntries() itself filters, e.g. bank notes and
+  // the old standalone clue-scroll item pages) plus the synthesized
+  // shop/droptable/clue pages.
+  function allEntries() {
+    ensureDerived();
+    const real = visibleEntries();
+    if (!derived) return real;
+    return [...real, ...derived.shops.entries, ...derived.dropTables.entries, ...derived.clues];
+  }
+
+  function findEntryById(id) {
+    ensureDerived();
+    const real = wikiData.entries.find((e) => e.id === id);
+    if (real) return real;
+    if (!derived) return null;
+    return (
+      derived.shops.entries.find((e) => e.id === id) ||
+      derived.dropTables.entries.find((e) => e.id === id) ||
+      derived.clues.find((e) => e.id === id)
+    );
+  }
+
+  function linkHtml(entry, label) {
+    if (!entry) return escapeHtml(label || '');
+    return `<span class="wiki-link" data-open="${entry.id}">${escapeHtml(
+      label || safeName(entry) || entry.name || ''
+    )}</span>`;
+  }
+
   function iconLetter(entry) {
-    return entry.kind === 'npc' ? 'N' : 'I';
+    if (entry.kind === 'npc') return 'N';
+    if (entry.kind === 'shop') return 'S';
+    if (entry.kind === 'droptable') return 'T';
+    if (entry.kind === 'clue') return 'C';
+    return 'I';
   }
 
   // Whether an entry has a real sprite to draw. Dummy items match losthq's
@@ -529,6 +1105,14 @@ function init(api) {
     )}" width="${size}" height="${size}"></canvas>`;
   }
 
+  function kindLabel(entry) {
+    if (entry.kind === 'npc') return 'NPC';
+    if (entry.kind === 'shop') return 'Shop';
+    if (entry.kind === 'droptable') return 'Drop table';
+    if (entry.kind === 'clue') return 'Clue scroll';
+    return 'Item';
+  }
+
   function listRowHtml(entry) {
     const iconHtml = hasSprite(entry)
       ? spriteCanvasHtml(entry, null, 'wiki-row-sprite')
@@ -537,8 +1121,8 @@ function init(api) {
       <div class="wiki-row" data-open="${entry.id}">
         ${iconHtml}
         <div class="wiki-row-text">
-          <div class="wiki-row-name">${escapeHtml(safeName(entry) || '(unnamed)')}</div>
-          <div class="wiki-row-sub">${entry.kind === 'npc' ? 'NPC' : 'Item'}${
+          <div class="wiki-row-name">${escapeHtml(safeName(entry) || entry.name || '(unnamed)')}</div>
+          <div class="wiki-row-sub">${kindLabel(entry)}${
       entry.kind === 'npc' && entry.combatLevel != null ? ` &middot; Level ${entry.combatLevel}` : ''
     }</div>
         </div>
@@ -652,12 +1236,343 @@ function init(api) {
     `;
   }
 
+  function sectionHtml(title, innerHtml) {
+    return `<div class="wiki-section-title">${escapeHtml(title)}</div>${innerHtml}`;
+  }
+
+  function emptySection(text) {
+    return `<div class="wiki-empty-section">${escapeHtml(text)}</div>`;
+  }
+
+  // ---- item page additions: shop locations / ground spawns / dropped by ----
+
+  function shopLocationsHtml(itemEntry) {
+    ensureDerived();
+    const rows = (derived.shops.byItemId.get(itemEntry.id) || []);
+    if (!rows.length) return sectionHtml('Shop Locations', emptySection('Not sold in any shop.'));
+    const body = rows
+      .map(
+        ({ shopEntry, qty, price }) => `
+          <tr>
+            <td class="wiki-data-name">${linkHtml(shopEntry)}</td>
+            <td class="wiki-data-num">${qty != null ? escapeHtml(String(qty)) : '&mdash;'}</td>
+            <td class="wiki-data-num">${price != null ? `${price.toLocaleString()} gp` : '&mdash;'}</td>
+          </tr>`
+      )
+      .join('');
+    return sectionHtml(
+      'Shop Locations',
+      `<table class="wiki-data-table">
+        <thead><tr><th>Shop</th><th>Stock</th><th>Price</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>`
+    );
+  }
+
+  function groundSpawnsHtml(itemEntry) {
+    const locations = groundSpawnsForItem(itemEntry);
+    if (!locations.length) return '';
+    const body = locations.map((loc) => `<li>${escapeHtml(loc)}</li>`).join('');
+    return sectionHtml('Ground Spawns', `<ul class="wiki-plain-list">${body}</ul>`);
+  }
+
+  function droppedByHtml(itemEntry) {
+    ensureDerived();
+    const rows = derived.npcDropIndex.byItemId.get(itemEntry.id) || [];
+    if (!rows.length) return '';
+    const body = rows
+      .map(
+        ({ npcEntry, odds, min, max }) => `
+          <tr>
+            <td class="wiki-data-name">${linkHtml(npcEntry)}</td>
+            <td class="wiki-data-num">${
+              min != null || max != null
+                ? escapeHtml(min === max || max == null ? String(min) : `${min}-${max}`)
+                : '&mdash;'
+            }</td>
+            <td class="wiki-data-num">${odds ? escapeHtml(odds) : '&mdash;'}</td>
+          </tr>`
+      )
+      .join('');
+    return sectionHtml(
+      'Dropped By',
+      `<table class="wiki-data-table">
+        <thead><tr><th>Monster</th><th>Quantity</th><th>Rarity</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>`
+    );
+  }
+
+  // ---- npc page additions: drops table / shop reference ----
+
+  function npcDropsHtml(npcEntry) {
+    if (!npcEntry.drops) return '';
+    const rollBase = npcEntry.drops.roll_base ?? npcEntry.drops.rollBase ?? null;
+    const rollRows = npcEntry.drops.roll_table ?? npcEntry.drops.rollTable ?? [];
+    const alwaysRows = npcEntry.drops.always ?? [];
+    const tertiaryRows = npcEntry.drops.tertiary ?? [];
+    if (!rollRows.length && !alwaysRows.length && !tertiaryRows.length) return '';
+
+    ensureDerived();
+
+    function tableRefRowHtml(tableKey, odds) {
+      const tier = clueTierFromTableKey(tableKey);
+      const target = tier
+        ? derived.clues.find((c) => c.tier === tier)
+        : derived.dropTables.byKey.get(tableKey);
+      return `
+        <tr>
+          <td class="wiki-data-name">${linkHtml(target, target ? safeName(target) || target.name : prettifyTableName(tableKey))}</td>
+          <td class="wiki-data-num">&mdash;</td>
+          <td class="wiki-data-num">${odds ? escapeHtml(odds) : '&mdash;'}</td>
+        </tr>`;
+    }
+
+    function itemRowHtml(itemEntry, ref, qty, odds) {
+      const label = itemEntry ? linkHtml(itemEntry) : escapeHtml(String(ref));
+      const { min, max } = parseQtyRange(qty);
+      const qtyLabel = min != null ? (min === max ? String(min) : `${min}-${max}`) : null;
+      return `
+        <tr>
+          <td class="wiki-data-name">${label}</td>
+          <td class="wiki-data-num">${qtyLabel ? escapeHtml(qtyLabel) : '&mdash;'}</td>
+          <td class="wiki-data-num">${odds ? escapeHtml(odds) : '&mdash;'}</td>
+        </tr>`;
+    }
+
+    function rollRowHtml(row) {
+      const parsed = parseDropItemField(row.item);
+      const odds = formatRollTableOdds(row, rollBase);
+      if (parsed.isTable) return tableRefRowHtml(parsed.tableKey, odds);
+      return itemRowHtml(resolveEntryRef(parsed.ref), parsed.ref, parsed.qty, odds);
+    }
+
+    function alwaysRowHtml(row) {
+      const parsed = parseDropItemField(row.item);
+      if (parsed.isTable) return tableRefRowHtml(parsed.tableKey, '100% (always)');
+      return itemRowHtml(resolveEntryRef(parsed.ref), parsed.ref, parsed.qty, '100% (always)');
+    }
+
+    function tertiaryRowHtml(row) {
+      const parsed = parseDropItemField(row.item);
+      const odds = formatChance(row); // pre-formatted "1/128" style
+      if (parsed.isTable) return tableRefRowHtml(parsed.tableKey, odds);
+      return itemRowHtml(resolveEntryRef(parsed.ref), parsed.ref, parsed.qty, odds);
+    }
+
+    const rows = [
+      ...alwaysRows.map(alwaysRowHtml),
+      ...rollRows.map(rollRowHtml),
+      ...tertiaryRows.map(tertiaryRowHtml),
+    ].join('');
+
+    return sectionHtml(
+      'Drops',
+      `<table class="wiki-data-table">
+        <thead><tr><th>Item</th><th>Quantity</th><th>Rarity</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="wiki-subnote">Clue scroll drop rates shown here are the combined per-tier chance, not the odds of each individual scroll step.</div>`
+    );
+  }
+
+  function npcShopRefHtml(npcEntry) {
+    ensureDerived();
+    const shops = derived.shops.byNpcId.get(npcEntry.id) || [];
+    if (!shops.length) return '';
+    const links = shops.map((s) => linkHtml(s)).join(', ');
+    return sectionHtml('Runs Shop', `<div class="wiki-plain-text">${links}</div>`);
+  }
+
+  // ---- shop page ----
+
+  function shopDetailHtml(shopEntry) {
+    const keeperLinks = shopEntry.shopkeepers.length
+      ? shopEntry.shopkeepers.map((n) => linkHtml(n)).join(', ')
+      : 'Unknown';
+    const rows = shopEntry.stockRows
+      .map((row) => {
+        const label = row.itemEntry ? linkHtml(row.itemEntry) : escapeHtml(String(row.itemRef));
+        return `
+          <tr>
+            <td class="wiki-data-name">${label}</td>
+            <td class="wiki-data-num">${row.qty != null ? escapeHtml(String(row.qty)) : '&mdash;'}</td>
+            <td class="wiki-data-num">${row.price != null ? `${row.price.toLocaleString()} gp` : '&mdash;'}</td>
+          </tr>`;
+      })
+      .join('');
+
+    return `
+      <div class="wiki-detail">
+        <div class="wiki-page-title">
+          ${escapeHtml(shopEntry.name)}
+          <span class="wiki-page-kind">Shop</span>
+        </div>
+        <div class="wiki-infobox">
+          <div class="wiki-infobox-header">${escapeHtml(shopEntry.name)}</div>
+          <table class="wiki-infobox-table">
+            <tr><td class="wiki-infobox-label">Shopkeeper</td><td class="wiki-infobox-value">${keeperLinks}</td></tr>
+          </table>
+        </div>
+        ${sectionHtml(
+          'Stock',
+          shopEntry.stockRows.length
+            ? `<table class="wiki-data-table">
+                <thead><tr><th>Item</th><th>Stock</th><th>Price</th></tr></thead>
+                <tbody>${rows}</tbody>
+              </table>`
+            : emptySection('No stock data available.')
+        )}
+      </div>
+    `;
+  }
+
+  // ---- shared drop table page ----
+
+  function dropTableDetailHtml(tableEntry) {
+    ensureDerived();
+    const droppedBy = derived.npcDropIndex.byTertiaryTable.get(tableEntry.tableKey) || [];
+
+    const rows = tableEntry.rows
+      .map((row) => {
+        if (row.floorConditional) {
+          const { aboveground, underground } = row.floorConditional;
+          const noteHtml = row.note ? `<div class="wiki-subnote">${escapeHtml(row.note)}</div>` : '';
+          return `
+            <tr>
+              <td class="wiki-data-name">Aboveground: ${
+                aboveground ? linkHtml(aboveground) : '&mdash;'
+              }<br>Underground: ${underground ? linkHtml(underground) : '&mdash;'}${noteHtml}</td>
+              <td class="wiki-data-num">${row.odds ? escapeHtml(row.odds) : '&mdash;'}</td>
+            </tr>`;
+        }
+        if (row.tableRef) {
+          const target = derived.dropTables.byKey.get(row.tableRef);
+          const label = linkHtml(target, target ? target.name : prettifyTableName(row.tableRef));
+          const noteHtml = row.note ? `<div class="wiki-subnote">${escapeHtml(row.note)}</div>` : '';
+          return `
+            <tr>
+              <td class="wiki-data-name">${label}${noteHtml}</td>
+              <td class="wiki-data-num">${row.odds ? escapeHtml(row.odds) : '&mdash;'}</td>
+            </tr>`;
+        }
+        const label = row.itemEntry ? linkHtml(row.itemEntry) : escapeHtml(String(row.itemRef));
+        const qtyLabel = row.qty != null && row.qty !== 1 ? ` (${row.qty})` : '';
+        const noteHtml = row.note ? `<div class="wiki-subnote">${escapeHtml(row.note)}</div>` : '';
+        return `
+          <tr>
+            <td class="wiki-data-name">${label}${escapeHtml(qtyLabel)}${noteHtml}</td>
+            <td class="wiki-data-num">${row.odds ? escapeHtml(row.odds) : '&mdash;'}</td>
+          </tr>`;
+      })
+      .join('');
+
+    const rowOfWealthNote =
+      tableEntry.rollBaseRingOfWealth != null
+        ? `<div class="wiki-subnote">With a Ring of Wealth equipped, rolls are out of ${tableEntry.rollBaseRingOfWealth} instead of ${tableEntry.rollBase}.</div>`
+        : '';
+
+    const droppedByBody = droppedBy
+      .map(
+        ({ npcEntry, odds }) => `
+          <tr>
+            <td class="wiki-data-name">${linkHtml(npcEntry)}</td>
+            <td class="wiki-data-num">${odds ? escapeHtml(odds) : '&mdash;'}</td>
+          </tr>`
+      )
+      .join('');
+
+    return `
+      <div class="wiki-detail">
+        <div class="wiki-page-title">
+          ${escapeHtml(tableEntry.name)}
+          <span class="wiki-page-kind">Drop Table</span>
+        </div>
+        ${sectionHtml(
+          'Table Contents',
+          `<table class="wiki-data-table">
+            <thead><tr><th>Item</th><th>Odds</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+          ${rowOfWealthNote}`
+        )}
+        ${sectionHtml(
+          'Dropped By',
+          droppedBy.length
+            ? `<table class="wiki-data-table">
+                <thead><tr><th>Monster</th><th>Roll Chance</th></tr></thead>
+                <tbody>${droppedByBody}</tbody>
+              </table>`
+            : emptySection('No monster currently references this table.')
+        )}
+      </div>
+    `;
+  }
+
+  // ---- clue scroll page (combined easy/medium/hard) ----
+
+  function clueDetailHtml(clueEntry) {
+    const droppedByBody = clueEntry.droppedBy
+      .map(
+        ({ npcEntry, odds }) => `
+          <tr>
+            <td class="wiki-data-name">${linkHtml(npcEntry)}</td>
+            <td class="wiki-data-num">${odds ? escapeHtml(odds) : '&mdash;'}</td>
+          </tr>`
+      )
+      .join('');
+
+    const subtypeBody = clueEntry.bySubtype
+      .map(([subtype, count]) => `<tr><td class="wiki-data-name">${escapeHtml(subtype)}</td><td class="wiki-data-num">${count}</td></tr>`)
+      .join('');
+
+    return `
+      <div class="wiki-detail">
+        <div class="wiki-page-title">
+          ${escapeHtml(clueEntry.name)}
+          <span class="wiki-page-kind">Clue Scroll</span>
+        </div>
+        ${sectionHtml(
+          'Dropped By',
+          clueEntry.droppedBy.length
+            ? `<table class="wiki-data-table">
+                <thead><tr><th>Monster</th><th>Chance</th></tr></thead>
+                <tbody>${droppedByBody}</tbody>
+              </table>
+              <div class="wiki-subnote">Odds shown are the combined chance of receiving a ${clueEntry.tier} clue scroll from this monster, not per individual clue step.</div>`
+            : emptySection('No monster currently drops this clue tier.')
+        )}
+        ${sectionHtml(
+          'Scroll Steps',
+          clueEntry.bySubtype.length
+            ? `<table class="wiki-data-table">
+                <thead><tr><th>Step Type</th><th>Count</th></tr></thead>
+                <tbody>${subtypeBody}</tbody>
+              </table>
+              <div class="wiki-subnote">${clueEntry.totalSteps} possible ${clueEntry.tier} clue steps in total, grouped by type.</div>`
+            : emptySection('No scroll-step data available for this tier.')
+        )}
+      </div>
+    `;
+  }
+
   // Infobox is always first, then any stats sections below it (currently
-  // just Combat Stats for equippable items). Actions/"wear" pills have
-  // been removed entirely, and the examine text has moved into the
-  // infobox (see infoboxHtml above) rather than sitting up here.
+  // just Combat Stats for equippable items, plus the new Shop
+  // Locations / Ground Spawns / Dropped By sections for items and Drops
+  // / Runs Shop for NPCs). Actions/"wear" pills have been removed
+  // entirely, and the examine text has moved into the infobox (see
+  // infoboxHtml above) rather than sitting up here.
   function detailHtml(entry) {
+    if (entry.kind === 'shop') return shopDetailHtml(entry);
+    if (entry.kind === 'droptable') return dropTableDetailHtml(entry);
+    if (entry.kind === 'clue') return clueDetailHtml(entry);
+
     const stats = combatStatsHtml(entry);
+    const extraSections =
+      entry.kind === 'npc'
+        ? [npcDropsHtml(entry), npcShopRefHtml(entry)]
+        : [droppedByHtml(entry), shopLocationsHtml(entry), groundSpawnsHtml(entry)];
+
     return `
       <div class="wiki-detail">
         <div class="wiki-page-title">
@@ -666,23 +1581,29 @@ function init(api) {
         </div>
         ${infoboxHtml(entry)}
         ${stats ? `<div class="wiki-page-main">${stats}</div>` : ''}
+        ${extraSections.filter(Boolean).join('')}
       </div>
     `;
   }
 
   function homeHtml() {
+    ensureDerived();
     const visible = visibleEntries();
     const items = visible.filter((e) => e.kind !== 'npc').length;
     const npcs = visible.filter((e) => e.kind === 'npc').length;
+    const shops = derived ? derived.shops.entries.length : 0;
+    const tables = derived ? derived.dropTables.entries.length + derived.clues.length : 0;
     return `
       <div class="wiki-home">
         <div class="wiki-home-title">Oldrune Wiki</div>
         <div class="wiki-home-desc">
-          Search for an item or NPC above, or browse everything the wiki currently knows about.
+          Search for an item, NPC, shop or drop table above, or browse everything the wiki currently knows about.
         </div>
         <div class="wiki-home-stats">
           <div class="wiki-home-stat"><b>${items}</b> items</div>
           <div class="wiki-home-stat"><b>${npcs}</b> NPCs</div>
+          <div class="wiki-home-stat"><b>${shops}</b> shops</div>
+          <div class="wiki-home-stat"><b>${tables}</b> drop tables</div>
         </div>
         <button class="wiki-home-browse-btn" id="wiki-browse-all">Browse all</button>
       </div>
@@ -725,7 +1646,7 @@ function init(api) {
       }
 
       if (openEntryId) {
-        const entry = wikiData.entries.find((e) => e.id === openEntryId);
+        const entry = findEntryById(openEntryId);
         if (!entry) {
           openEntryId = null;
           paint();
@@ -733,6 +1654,16 @@ function init(api) {
         }
         root.innerHTML = detailHtml(entry);
         renderSpritesIn(root);
+        // Cross-reference links inside the page body (shop stock rows,
+        // drop table rows, "Dropped By" monster names, etc.) — same
+        // open-by-id mechanism as the list rows, just delegated over
+        // whatever wiki-link spans detailHtml happened to render.
+        root.querySelectorAll('[data-open]').forEach((link) => {
+          link.addEventListener('click', () => {
+            openEntryId = link.dataset.open;
+            paint();
+          });
+        });
         return;
       }
 
@@ -806,8 +1737,9 @@ function init(api) {
       const listEl = root.querySelector('#wiki-list');
 
       let matches;
+      let pool;
       try {
-        const pool = visibleEntries();
+        pool = allEntries();
         matches = pool.filter((e) => matchesSearch(e, q)).slice(0, 200);
       } catch (err) {
         api.warn('[wiki] search error:', err);
@@ -821,7 +1753,7 @@ function init(api) {
       if (label) {
         label.textContent = q
           ? `${matches.length} result${matches.length === 1 ? '' : 's'}`
-          : `All entries (${Math.min(wikiData.entries.length, 200)} of ${wikiData.entries.length} shown)`;
+          : `All entries (${Math.min(pool.length, 200)} of ${pool.length} shown)`;
       }
 
       listEl.innerHTML = matches.length
@@ -865,8 +1797,8 @@ function destroy() {
 export default {
   id: 'wiki',
   name: 'Wiki',
-  description: 'Searchable in-client wiki for items and NPCs.',
-  version: '1.1.3',
+  description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
+  version: '1.1.8',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
