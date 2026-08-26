@@ -64,6 +64,33 @@
 //     body, for both items and NPCs.
 //   - The item "Actions" pill list has been removed entirely.
 //   - Page layout is now infobox-first, with combat stats (etc.) below it.
+//
+// v1.3 changes:
+//   - Item/NPC sprites are now real icons instead of "I"/"N" letter
+//     badges — both in the list rows and in the page infobox.
+//   - Sprite extraction is ported 1:1 from losthq's own client code
+//     (js/spriteLoader.js): fetch the spritesheet once via
+//     fetch -> blob -> createImageBitmap (cached at module scope, so it
+//     only ever loads once per session), then for a given sprite index
+//     compute `sx = (id % perRow) * spriteSize`,
+//     `sy = floor(id / perRow) * spriteSize`, and
+//     `ctx.drawImage(bitmap, sx, sy, spriteSize, spriteSize, 0, 0, w, h)`
+//     onto a per-entry <canvas>. This replaces the previous CSS
+//     background-position based `spriteStyle()` hack, which also had a
+//     real bug: it assumed 64 columns/64 rows for BOTH sheets, but per
+//     losthq's own loader the NPC sheet is 32-per-row at 256px each (only
+//     the item sheet is 64-per-row at 32px) — that mismatch is why NPC
+//     icons could come out misaligned/cropped. The per-sheet constants
+//     below match losthq's loader exactly.
+//   - Sprites are drawn into <canvas> elements after each paint() (list
+//     rows and the infobox), same pattern as losthq's
+//     renderItemSpriteToCanvas/renderNPCSpriteToCanvas being called after
+//     DOM insertion — see renderSpritesIn().
+//   - NOT ported: losthq's `stackableSpriteOverrides` quantity-variant
+//     icon table (e.g. showing a "handful of arrows" sprite instead of a
+//     single arrow past certain stack sizes). The wiki only ever shows
+//     one static icon per item, so there's no stack count to vary on. If
+//     that's wanted somewhere, it needs to be wired in separately.
 
 const WIKI_DATA_URL =
   'https://raw.githubusercontent.com/SoapFreakz/OldLite-Plugins/main/wiki-data/wiki.json';
@@ -75,6 +102,17 @@ const NPC_SPRITESHEET_URL =
   'https://raw.githubusercontent.com/SoapFreakz/OldLite-Plugins/main/sprites/npc_spritesheet.png';
 
 const STYLE_ID = 'ol-wiki-plugin-style';
+
+// ---------------------------------------------------------------------
+// Sprite sheet layout — copied verbatim from losthq's js/spriteLoader.js
+// (itemSpriteSize/itemSpritesPerRow and npcSpriteSize/npcSpritesPerRow).
+// Do not "fix" these to both be 64/64 — the NPC sheet really is laid out
+// differently from the item sheet in the source client.
+// ---------------------------------------------------------------------
+const ITEM_SPRITE_SIZE = 32;
+const ITEM_SPRITES_PER_ROW = 64;
+const NPC_SPRITE_SIZE = 256;
+const NPC_SPRITES_PER_ROW = 32;
 
 const WIKI_STYLE = `
   .wiki-root {
@@ -128,6 +166,10 @@ const WIKI_STYLE = `
   }
   .wiki-row-icon-item { background: var(--ol-accent); }
   .wiki-row-icon-npc { background: #c96a4a; }
+  .wiki-row-sprite {
+    flex-shrink: 0; display: block; width: 1.9em; height: 1.9em; border-radius: 0.4em;
+    background: var(--ol-bg); image-rendering: pixelated; image-rendering: crisp-edges;
+  }
   .wiki-row-text { min-width: 0; }
   .wiki-row-name {
     color: var(--ol-text); font-size: 1.05em; white-space: nowrap; overflow: hidden;
@@ -168,11 +210,9 @@ const WIKI_STYLE = `
     font-size: 1.4em; font-weight: bold; color: var(--ol-text-tertiary);
     border-bottom: 1px solid #2e2818; background: var(--ol-bg);
   }
-  .wiki-infobox-sprite {
-    width: 4.6em; height: 4.6em; flex-shrink: 0;
-    background-repeat: no-repeat;
-    background-position: 0 0;
-    image-rendering: pixelated;
+  .wiki-infobox-sprite-canvas {
+    display: block; width: 4.6em; height: 4.6em; flex-shrink: 0;
+    image-rendering: pixelated; image-rendering: crisp-edges;
   }
   .wiki-infobox-table { width: 100%; border-collapse: collapse; }
   .wiki-infobox-table tr:nth-child(even) { background: var(--ol-bg); }
@@ -223,6 +263,135 @@ function ensureStyleInjected() {
   style.id = STYLE_ID;
   style.textContent = WIKI_STYLE;
   document.head.appendChild(style);
+}
+
+// ---------------------------------------------------------------------
+// Sprite extraction / rendering — ported 1:1 from losthq's
+// js/spriteLoader.js (loadSpriteSheet + drawItemImage/drawNPCImage).
+//
+// Kept at module scope (not inside init()) so the decoded bitmaps are
+// cached for the whole client session and don't get re-fetched every
+// time the wiki panel is opened/closed, same as losthq's own
+// itemBitmap/npcBitmap module-level state.
+// ---------------------------------------------------------------------
+let itemBitmap = null;
+let itemBitmapWidth = 0;
+let itemBitmapHeight = 0;
+let itemBitmapLoading = null;
+let itemBitmapFailed = false;
+
+let npcBitmap = null;
+let npcBitmapWidth = 0;
+let npcBitmapHeight = 0;
+let npcBitmapLoading = null;
+let npcBitmapFailed = false;
+
+function loadSpriteSheet(kind) {
+  if (kind === 'item') {
+    if (itemBitmap || itemBitmapFailed) return Promise.resolve(itemBitmap);
+    if (itemBitmapLoading) return itemBitmapLoading;
+
+    itemBitmapLoading = (async () => {
+      try {
+        const res = await fetch(ITEM_SPRITESHEET_URL);
+        if (!res.ok) throw new Error('fetch failed: ' + res.status);
+        const blob = await res.blob();
+        const bitmap = await createImageBitmap(blob);
+        itemBitmap = bitmap;
+        itemBitmapWidth = bitmap.width;
+        itemBitmapHeight = bitmap.height;
+        itemBitmapLoading = null;
+        return itemBitmap;
+      } catch (e) {
+        itemBitmapFailed = true;
+        itemBitmapLoading = null;
+        console.error('[wiki] failed to load item spritesheet:', e);
+        throw e;
+      }
+    })();
+    return itemBitmapLoading;
+  }
+
+  if (kind === 'npc') {
+    if (npcBitmap || npcBitmapFailed) return Promise.resolve(npcBitmap);
+    if (npcBitmapLoading) return npcBitmapLoading;
+
+    npcBitmapLoading = (async () => {
+      try {
+        const res = await fetch(NPC_SPRITESHEET_URL);
+        if (!res.ok) throw new Error('fetch failed: ' + res.status);
+        const blob = await res.blob();
+        const bitmap = await createImageBitmap(blob);
+        npcBitmap = bitmap;
+        npcBitmapWidth = bitmap.width;
+        npcBitmapHeight = bitmap.height;
+        npcBitmapLoading = null;
+        return npcBitmap;
+      } catch (e) {
+        npcBitmapFailed = true;
+        npcBitmapLoading = null;
+        console.error('[wiki] failed to load npc spritesheet:', e);
+        throw e;
+      }
+    })();
+    return npcBitmapLoading;
+  }
+
+  return Promise.resolve(null);
+}
+
+// Draws one entry's icon into a <canvas data-sprite-kind="item|npc"
+// data-sprite-id="<sourceId>">. Mirrors losthq's
+// renderItemSpriteToCanvas/renderNPCSpriteToCanvas: guarded by a "done"
+// attribute so a canvas is only ever drawn once, and falls back to
+// waiting on loadSpriteSheet() + redrawing if the bitmap isn't decoded
+// yet (exactly like drawItemImage/drawNPCImage do when itemBitmap/
+// npcBitmap is still null).
+function drawSpriteToCanvas(canvas) {
+  if (canvas.getAttribute('done')) return;
+  canvas.setAttribute('done', 'true');
+
+  const kind = canvas.getAttribute('data-sprite-kind') === 'npc' ? 'npc' : 'item';
+  const sourceId = Number(canvas.getAttribute('data-sprite-id'));
+  if (!Number.isFinite(sourceId) || sourceId < 0) return;
+
+  const spriteSize = kind === 'npc' ? NPC_SPRITE_SIZE : ITEM_SPRITE_SIZE;
+  const perRow = kind === 'npc' ? NPC_SPRITES_PER_ROW : ITEM_SPRITES_PER_ROW;
+
+  // Same coordinate math as losthq: column/row from the flat sprite
+  // index, times the fixed per-sheet sprite size.
+  const sx = (sourceId % perRow) * spriteSize;
+  const sy = Math.floor(sourceId / perRow) * spriteSize;
+
+  const w = canvas.width || spriteSize;
+  const h = canvas.height || spriteSize;
+  const ctx = canvas.getContext('2d');
+
+  const draw = (bitmap) => {
+    if (!bitmap) return;
+    const bw = kind === 'npc' ? npcBitmapWidth : itemBitmapWidth;
+    const bh = kind === 'npc' ? npcBitmapHeight : itemBitmapHeight;
+    if (sx + spriteSize > bw || sy + spriteSize > bh) return;
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(bitmap, sx, sy, spriteSize, spriteSize, 0, 0, w, h);
+  };
+
+  const cached = kind === 'npc' ? npcBitmap : itemBitmap;
+  if (cached) {
+    draw(cached);
+    return;
+  }
+
+  loadSpriteSheet(kind)
+    .then(draw)
+    .catch(() => {});
+}
+
+// Call after any innerHTML paint that may contain sprite canvases —
+// same idea as losthq calling renderItemSpriteToCanvas/
+// renderNPCSpriteToCanvas right after inserting each canvas into the DOM.
+function renderSpritesIn(root) {
+  root.querySelectorAll('canvas[data-sprite-kind]').forEach(drawSpriteToCanvas);
 }
 
 function init(api) {
@@ -282,10 +451,10 @@ function init(api) {
 
   // Fallback dedupe for when isNotedItem()'s flag checks don't catch
   // anything (because wiki.json doesn't set those fields): collapse any
-  // items sharing an exact (case-insensitive) name down to whichever one
-  // looks the most like the "real", unnoted item — i.e. has the most item
-  // detail (equip data, non-zero weight, actions, a value). Ties keep
-  // whichever entry came first.
+  // items sharing an exact name down to whichever one looks the most like
+  // the "real", unnoted item — i.e. has the most item detail (equip data,
+  // non-zero weight, actions, a value). Ties keep whichever entry came
+  // first.
   //
   // This is intentionally name-based rather than flag-based, so it works
   // without knowing wiki.json's actual note-marker field. If it ever
@@ -341,36 +510,32 @@ function init(api) {
     return entry.kind === 'npc' ? 'N' : 'I';
   }
 
-  function spriteStyle(entry) {
-    if (entry == null || entry.sourceId == null) return '';
-    if (entry.kind === 'item' && entry.dummyitem) return '';
-
+  // Whether an entry has a real sprite to draw. Dummy items match losthq's
+  // itemdb.js, which shows a "dummy item" notice instead of an icon for
+  // those, so we fall back to the letter badge for them too.
+  function hasSprite(entry) {
+    if (entry == null || entry.sourceId == null) return false;
+    if (entry.kind === 'item' && entry.dummyitem) return false;
     const sourceId = Number(entry.sourceId);
-    if (!Number.isFinite(sourceId) || sourceId < 0) return '';
+    return Number.isFinite(sourceId) && sourceId >= 0;
+  }
 
-    const columns = 64;
-    const rows = 64;
-    const index = Math.floor(sourceId);
-    const column = index % columns;
-    const row = Math.floor(index / columns);
-
-    if (row >= rows) return '';
-
-    const x = columns > 1 ? (column / (columns - 1)) * 100 : 0;
-    const y = rows > 1 ? (row / (rows - 1)) * 100 : 0;
-    const sheet = entry.kind === 'npc' ? NPC_SPRITESHEET_URL : ITEM_SPRITESHEET_URL;
-
-    return [
-      `background-image:url("${sheet}")`,
-      `background-size:${columns * 100}% ${rows * 100}%`,
-      `background-position:${x}% ${y}%`,
-    ].join(';');
+  function spriteCanvasHtml(entry, sizeAttr, cssClass) {
+    const kind = entry.kind === 'npc' ? 'npc' : 'item';
+    const nativeSize = kind === 'npc' ? NPC_SPRITE_SIZE : ITEM_SPRITE_SIZE;
+    const size = sizeAttr || nativeSize;
+    return `<canvas class="${cssClass}" data-sprite-kind="${kind}" data-sprite-id="${Number(
+      entry.sourceId
+    )}" width="${size}" height="${size}"></canvas>`;
   }
 
   function listRowHtml(entry) {
+    const iconHtml = hasSprite(entry)
+      ? spriteCanvasHtml(entry, null, 'wiki-row-sprite')
+      : `<span class="wiki-row-icon wiki-row-icon-${entry.kind}">${iconLetter(entry)}</span>`;
     return `
       <div class="wiki-row" data-open="${entry.id}">
-        <span class="wiki-row-icon wiki-row-icon-${entry.kind}">${iconLetter(entry)}</span>
+        ${iconHtml}
         <div class="wiki-row-text">
           <div class="wiki-row-name">${escapeHtml(safeName(entry) || '(unnamed)')}</div>
           <div class="wiki-row-sub">${entry.kind === 'npc' ? 'NPC' : 'Item'}${
@@ -422,16 +587,14 @@ function init(api) {
   // infobox can be the very first thing shown on a page.
   function infoboxHtml(entry) {
     const rows = entry.kind === 'npc' ? infoboxRowsForNpc(entry) : infoboxRowsForItem(entry);
-    const sprite = spriteStyle(entry);
+    const iconInner = hasSprite(entry)
+      ? spriteCanvasHtml(entry, null, 'wiki-infobox-sprite-canvas')
+      : iconLetter(entry);
 
     return `
       <div class="wiki-infobox">
         <div class="wiki-infobox-header">${escapeHtml(safeName(entry))}</div>
-        <div class="wiki-infobox-icon">${
-          sprite
-            ? `<div class="wiki-infobox-sprite" style="${sprite}"></div>`
-            : iconLetter(entry)
-        }</div>
+        <div class="wiki-infobox-icon">${iconInner}</div>
         <div class="wiki-infobox-examine">${escapeHtml(entry.examine || 'No description available.')}</div>
         <table class="wiki-infobox-table">
           ${rows
@@ -569,6 +732,7 @@ function init(api) {
           return;
         }
         root.innerHTML = detailHtml(entry);
+        renderSpritesIn(root);
         return;
       }
 
@@ -669,6 +833,8 @@ function init(api) {
           paint();
         });
       });
+
+      renderSpritesIn(listEl);
     }
 
     paint();
@@ -690,14 +856,17 @@ function destroy() {
   // The injected <style id="ol-wiki-plugin-style"> in document.head is left
   // in place intentionally: it's idempotent (guarded by id) and harmless to
   // leave loaded, same as loader.js-injected global styles elsewhere in
-  // OldLite.
+  // OldLite. The decoded item/npc spritesheet ImageBitmaps are likewise
+  // left cached at module scope on purpose — same rationale as losthq's
+  // own itemBitmap/npcBitmap never getting torn down — so reopening the
+  // wiki panel doesn't re-fetch/re-decode the sheets every time.
 }
 
 export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items and NPCs.',
-  version: '1.1.2',
+  version: '1.1.3',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
