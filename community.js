@@ -47,7 +47,7 @@
 
 const DISCORD_URL = 'https://discord.gg/52xw9H3YqT';
 const WEBSITE_URL = 'https://www.oldrune.com';
-const COOLDOWN_MS = 10; // 12 hours
+const COOLDOWN_MS = 12 * 60 * 60 * 10; // 12 hours
 
 const USERNAME_KEY = 'username';
 const VOTE_STATE_KEY = 'voteState';
