@@ -68,6 +68,12 @@
 const WIKI_DATA_URL =
   'https://raw.githubusercontent.com/SoapFreakz/OldLite-Plugins/main/wiki-data/wiki.json';
 
+const ITEM_SPRITESHEET_URL =
+  'https://raw.githubusercontent.com/SoapFreakz/OldLite-Plugins/main/sprites/item_spritesheet.png';
+
+const NPC_SPRITESHEET_URL =
+  'https://raw.githubusercontent.com/SoapFreakz/OldLite-Plugins/main/sprites/npc_spritesheet.png';
+
 const STYLE_ID = 'ol-wiki-plugin-style';
 
 const WIKI_STYLE = `
@@ -161,6 +167,12 @@ const WIKI_STYLE = `
     display: flex; align-items: center; justify-content: center; height: 4.6em;
     font-size: 1.4em; font-weight: bold; color: var(--ol-text-tertiary);
     border-bottom: 1px solid #2e2818; background: var(--ol-bg);
+  }
+  .wiki-infobox-sprite {
+    width: 4.6em; height: 4.6em; flex-shrink: 0;
+    background-repeat: no-repeat;
+    background-position: 0 0;
+    image-rendering: pixelated;
   }
   .wiki-infobox-table { width: 100%; border-collapse: collapse; }
   .wiki-infobox-table tr:nth-child(even) { background: var(--ol-bg); }
@@ -329,6 +341,32 @@ function init(api) {
     return entry.kind === 'npc' ? 'N' : 'I';
   }
 
+  function spriteStyle(entry) {
+    if (entry == null || entry.sourceId == null) return '';
+    if (entry.kind === 'item' && entry.dummyitem) return '';
+
+    const sourceId = Number(entry.sourceId);
+    if (!Number.isFinite(sourceId) || sourceId < 0) return '';
+
+    const columns = 64;
+    const rows = 64;
+    const index = Math.floor(sourceId);
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+
+    if (row >= rows) return '';
+
+    const x = columns > 1 ? (column / (columns - 1)) * 100 : 0;
+    const y = rows > 1 ? (row / (rows - 1)) * 100 : 0;
+    const sheet = entry.kind === 'npc' ? NPC_SPRITESHEET_URL : ITEM_SPRITESHEET_URL;
+
+    return [
+      `background-image:url("${sheet}")`,
+      `background-size:${columns * 100}% ${rows * 100}%`,
+      `background-position:${x}% ${y}%`,
+    ].join(';');
+  }
+
   function listRowHtml(entry) {
     return `
       <div class="wiki-row" data-open="${entry.id}">
@@ -384,10 +422,16 @@ function init(api) {
   // infobox can be the very first thing shown on a page.
   function infoboxHtml(entry) {
     const rows = entry.kind === 'npc' ? infoboxRowsForNpc(entry) : infoboxRowsForItem(entry);
+    const sprite = spriteStyle(entry);
+
     return `
       <div class="wiki-infobox">
         <div class="wiki-infobox-header">${escapeHtml(safeName(entry))}</div>
-        <div class="wiki-infobox-icon">${iconLetter(entry)}</div>
+        <div class="wiki-infobox-icon">${
+          sprite
+            ? `<div class="wiki-infobox-sprite" style="${sprite}"></div>`
+            : iconLetter(entry)
+        }</div>
         <div class="wiki-infobox-examine">${escapeHtml(entry.examine || 'No description available.')}</div>
         <table class="wiki-infobox-table">
           ${rows
@@ -653,7 +697,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items and NPCs.',
-  version: '1.1.1',
+  version: '1.1.2',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
