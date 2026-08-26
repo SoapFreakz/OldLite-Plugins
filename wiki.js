@@ -1814,7 +1814,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
-  version: '1.1.13',
+  version: '1.1.14',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
