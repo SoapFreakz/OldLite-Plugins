@@ -267,7 +267,7 @@ const WIKI_STYLE = `
   .wiki-infobox-table { width: 100%; border-collapse: collapse; }
   .wiki-infobox-table tr:nth-child(even) { background: var(--ol-bg); }
   .wiki-infobox-table td {
-    font-size: 0.85em; padding: 0.35em 0.65em; vertical-align: top; border-top: 1px solid #241f14;
+    font-size: 0.7em; padding: 0.2em 0.65em; vertical-align: top; border-top: 1px solid #241f14;
   }
   .wiki-infobox-table tr:first-child td { border-top: none; }
   .wiki-infobox-table td.wiki-infobox-label { color: var(--ol-text-tertiary); white-space: nowrap; }
@@ -1814,7 +1814,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
-  version: '1.1.11',
+  version: '1.1.12',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
