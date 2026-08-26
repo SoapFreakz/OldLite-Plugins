@@ -299,16 +299,19 @@ const WIKI_STYLE = `
   .wiki-other-bonus b { color: var(--ol-accent); }
 
   /* ---------- generic data tables: shop stock, drops, drop-table rows ---------- */
-  .wiki-data-table { width: 100%; border-collapse: collapse; font-size: 0.9em; margin-bottom: 0.4em; }
+    .wiki-data-table {
+    width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse;
+    font-size: 0.9em; margin-bottom: 0.4em;
+  }
   .wiki-data-table th, .wiki-data-table td {
-    border-top: 1px solid #241f14; padding: 0.4em 0.55em; text-align: left; vertical-align: middle;
+    border: 1px solid #2e2818; padding: 0.4em 0.55em; text-align: left; vertical-align: middle;
+    overflow-wrap: break-word; word-break: break-word;
   }
   .wiki-data-table th {
     background: var(--ol-panel-bg); color: var(--ol-text-tertiary); font-weight: 600;
-    border-top: none; white-space: nowrap;
   }
   .wiki-data-table tr:nth-child(even) td { background: var(--ol-bg); }
-  .wiki-data-table td.wiki-data-num { text-align: right; color: var(--ol-text); white-space: nowrap; }
+  .wiki-data-table td.wiki-data-num { text-align: right; color: var(--ol-text); white-space: normal; }
   .wiki-data-table td.wiki-data-name { color: var(--ol-text); }
   .wiki-link {
     color: var(--ol-accent); cursor: pointer; text-decoration: none;
@@ -515,8 +518,23 @@ function init(api) {
   // these fields exist in your actual wiki.json, tell me the field name it
   // uses instead (or paste one noted + one unnoted entry) and I'll swap
   // this over to match exactly, rather than guessing further.
+  function isBankNoteExamine(entry) {
+    return typeof entry?.examine === 'string' && /swap this note at any bank for/i.test(entry.examine);
+  }
+
+  function unnoteEntry(entry) {
+    if (!entry || !isBankNoteExamine(entry)) return entry;
+    const name = safeName(entry).trim().toLowerCase();
+    if (!name) return entry;
+    const real = wikiData.entries.find(
+      (e) => e.kind === 'item' && !isBankNoteExamine(e) && safeName(e).trim().toLowerCase() === name
+    );
+    return real || entry;
+  }
+
   function isNotedItem(entry) {
     if (entry.kind !== 'item') return false;
+    if (isBankNoteExamine(entry)) return true;
     if (entry.noted === true || entry.isNoted === true) return true;
     if (entry.notedTemplate != null || entry.certTemplate != null) return true;
     if (entry.linkedNoteId != null || entry.noteOf != null) return true;
@@ -628,15 +646,15 @@ function init(api) {
     const raw = String(ref).trim();
     if (!raw) return null;
     const byId = wikiData.entries.find((e) => e.id === raw);
-    if (byId) return byId;
+    if (byId) return unnoteEntry(byId);
     const byDebugname = wikiData.entries.find(
       (e) => e.debugname === raw || e.debugName === raw
     );
-    if (byDebugname) return byDebugname;
+    if (byDebugname) return unnoteEntry(byDebugname);
     const byName = wikiData.entries.find(
       (e) => safeName(e).toLowerCase() === raw.toLowerCase()
     );
-    if (byName) return byName;
+    if (byName) return unnoteEntry(byName);
     return null;
   }
 
@@ -946,6 +964,9 @@ function init(api) {
       return { isTable: true, tableKey: sharedTableRefKey(item) };
     }
     if (Array.isArray(item)) {
+      if (isSharedTableRef(item[0])) {
+        return { isTable: true, tableKey: sharedTableRefKey(item[0]) };
+      }
       return { isTable: false, ref: item[0], qty: item[1] };
     }
     // Fallback for any row that turns out to just be a bare debugname
@@ -1368,8 +1389,7 @@ function init(api) {
       `<table class="wiki-data-table">
         <thead><tr><th>Item</th><th>Quantity</th><th>Rarity</th></tr></thead>
         <tbody>${rows}</tbody>
-      </table>
-      <div class="wiki-subnote">Clue scroll drop rates shown here are the combined per-tier chance, not the odds of each individual scroll step.</div>`
+      </table>`
     );
   }
 
@@ -1535,8 +1555,7 @@ function init(api) {
             ? `<table class="wiki-data-table">
                 <thead><tr><th>Monster</th><th>Chance</th></tr></thead>
                 <tbody>${droppedByBody}</tbody>
-              </table>
-              <div class="wiki-subnote">Odds shown are the combined chance of receiving a ${clueEntry.tier} clue scroll from this monster, not per individual clue step.</div>`
+              </table>`
             : emptySection('No monster currently drops this clue tier.')
         )}
         ${sectionHtml(
@@ -1795,7 +1814,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
-  version: '1.0.9',
+  version: '1.1.10',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
