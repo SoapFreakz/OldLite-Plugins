@@ -58,7 +58,8 @@ const WIKI_STYLE = `
   .wiki-root {
     display: flex; flex-direction: column; height: 100%; min-height: 0;
     /* single scale knob — everything below is em off this */
-    font-size: clamp(02px, 1.05vw, 32px);
+    font-size: clamp(12px, 1.05vw, 32px);
+    overflow-x: hidden;
   }
 
   /* ---------- home / front page ---------- */
@@ -117,21 +118,24 @@ const WIKI_STYLE = `
   .wiki-error { color: #d4695f; }
 
   /* ---------- detail / "wiki page" view ---------- */
-  .wiki-detail { padding: 0.9em 1em; overflow-y: auto; }
+  .wiki-detail { padding: 0.9em 1em; overflow-y: auto; overflow-x: hidden; box-sizing: border-box; }
   .wiki-page-title {
     color: var(--ol-text); font-size: 1.4em; font-weight: bold; border-bottom: 2px solid #2e2818;
-    padding-bottom: 0.4em; margin-bottom: 0.3em; display: flex; align-items: center; gap: 0.6em;
+    padding-bottom: 0.4em; margin-bottom: 0.7em; display: flex; align-items: center; gap: 0.6em;
+    overflow-wrap: break-word; word-break: break-word;
   }
   .wiki-page-title .wiki-page-kind {
     font-size: 0.62em; font-weight: normal; color: var(--ol-text-tertiary); text-transform: uppercase;
     letter-spacing: 0.04em;
   }
-  .wiki-page-body { display: flex; gap: 1em; align-items: flex-start; flex-wrap: wrap; }
-  .wiki-page-main { flex: 1 1 260px; min-width: 0; }
-
   .wiki-infobox {
-    flex: 0 0 16em; width: 16em; background: var(--ol-panel-bg); border: 1px solid #2e2818;
-    border-radius: 0.55em; overflow: hidden;
+    width: 100%; max-width: 100%; box-sizing: border-box; background: var(--ol-panel-bg);
+    border: 1px solid #2e2818; border-radius: 0.55em; overflow: hidden; margin-bottom: 1em;
+  }
+  .wiki-infobox-examine {
+    color: var(--ol-text-secondary); font-size: 0.9em; font-style: italic; line-height: 1.4;
+    padding: 0.65em 0.8em; border-bottom: 1px solid #2e2818; overflow-wrap: break-word;
+    word-break: break-word;
   }
   .wiki-infobox-header {
     background: var(--ol-accent); color: var(--ol-bg); font-weight: bold; font-size: 0.95em;
@@ -149,11 +153,9 @@ const WIKI_STYLE = `
   }
   .wiki-infobox-table tr:first-child td { border-top: none; }
   .wiki-infobox-table td.wiki-infobox-label { color: var(--ol-text-tertiary); white-space: nowrap; }
-  .wiki-infobox-table td.wiki-infobox-value { color: var(--ol-text); font-weight: 600; text-align: right; }
-
-  .wiki-examine {
-    color: var(--ol-text-secondary); font-size: 0.98em; font-style: italic; line-height: 1.45;
-    margin: 0.7em 0 1em; border-left: 3px solid #2e2818; padding-left: 0.7em;
+  .wiki-infobox-table td.wiki-infobox-value {
+    color: var(--ol-text); font-weight: 600; text-align: right; overflow-wrap: break-word;
+    word-break: break-word;
   }
 
   .wiki-section-title {
@@ -162,7 +164,7 @@ const WIKI_STYLE = `
   }
 
   /* combat bonuses table, OSRS-wiki style */
-  .wiki-bonus-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+  .wiki-bonus-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 0.85em; }
   .wiki-bonus-table th, .wiki-bonus-table td {
     border: 1px solid #2e2818; padding: 0.4em 0.45em; text-align: center;
   }
@@ -178,11 +180,6 @@ const WIKI_STYLE = `
   .wiki-other-bonus { font-size: 0.85em; color: var(--ol-text-secondary); }
   .wiki-other-bonus b { color: var(--ol-accent); }
 
-  .wiki-actions { display: flex; flex-wrap: wrap; gap: 0.4em; }
-  .wiki-action-pill {
-    background: var(--ol-panel-bg); border: 1px solid #2e2818; color: var(--ol-text-secondary);
-    border-radius: 0.85em; padding: 0.2em 0.65em; font-size: 0.9em;
-  }
 `;
 
 function ensureStyleInjected() {
@@ -237,6 +234,26 @@ function init(api) {
   // completely dead (nothing updates, no error visible on screen).
   function safeName(entry) {
     return typeof entry?.name === 'string' ? entry.name : '';
+  }
+
+  // Bank notes show up in the source data as their own separate item entry
+  // (e.g. "Mithril Platelegs" and a distinct "Mithril Platelegs" note-form
+  // entry). We don't want those cluttering search/browse as duplicates.
+  // Checked in order of how OSRS item dumps usually mark this — if none of
+  // these fields exist in your actual wiki.json, tell me the field name it
+  // uses instead (or paste one noted + one unnoted entry) and I'll swap
+  // this over to match exactly, rather than guessing further.
+  function isNotedItem(entry) {
+    if (entry.kind !== 'item') return false;
+    if (entry.noted === true || entry.isNoted === true) return true;
+    if (entry.notedTemplate != null || entry.certTemplate != null) return true;
+    if (entry.linkedNoteId != null || entry.noteOf != null) return true;
+    if (typeof entry.name === 'string' && /\(noted\)$/i.test(entry.name.trim())) return true;
+    return false;
+  }
+
+  function visibleEntries() {
+    return wikiData.entries.filter((e) => !isNotedItem(e));
   }
 
   function matchesSearch(entry, q) {
@@ -370,8 +387,9 @@ function init(api) {
   }
 
   function homeHtml() {
-    const items = wikiData.entries.filter((e) => e.kind !== 'npc').length;
-    const npcs = wikiData.entries.filter((e) => e.kind === 'npc').length;
+    const visible = visibleEntries();
+    const items = visible.filter((e) => e.kind !== 'npc').length;
+    const npcs = visible.filter((e) => e.kind === 'npc').length;
     return `
       <div class="wiki-home">
         <div class="wiki-home-title">Oldrune Wiki</div>
@@ -504,7 +522,8 @@ function init(api) {
 
       let matches;
       try {
-        matches = wikiData.entries.filter((e) => matchesSearch(e, q)).slice(0, 200);
+        const pool = visibleEntries();
+        matches = pool.filter((e) => matchesSearch(e, q)).slice(0, 200);
       } catch (err) {
         api.warn('[wiki] search error:', err);
         listEl.innerHTML = `<div class="wiki-error">Search hit a data error: ${escapeHtml(
@@ -557,7 +576,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items and NPCs.',
-  version: '1.0.5',
+  version: '1.0.7',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
