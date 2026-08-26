@@ -24,9 +24,129 @@
 //
 // State: none persisted. Search text and the currently-open page are
 // just in-memory render state, reset each time the panel opens.
+//
+// STYLE INJECTION: the stylesheet is appended to document.head (once,
+// guarded by id) rather than into `container`. paint() replaces
+// `container.innerHTML` on every render (list <-> detail <-> back), and
+// anything appended as a child of `container` gets wiped out the next
+// time that happens. Keeping the <style> tag in the document head means
+// it survives every repaint regardless of what container's innerHTML does.
 
 const WIKI_DATA_URL =
   'https://raw.githubusercontent.com/SoapFreakz/OldLite-Plugins/main/wiki-data/wiki.json';
+
+const STYLE_ID = 'ol-wiki-plugin-style';
+
+const WIKI_STYLE = `
+  .wiki-root { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+
+  /* ---------- list view ---------- */
+  .wiki-search-wrap { padding: 8px 10px; border-bottom: 1px solid #2e2818; }
+  .wiki-search-input {
+    box-sizing: border-box; width: 100%; background: var(--ol-bg); color: var(--ol-text);
+    border: 1px solid #2e2818; border-radius: 6px; padding: 7px 9px; font-size: 1.15vw;
+    font-family: inherit;
+  }
+  .wiki-search-input:focus { outline: none; border-color: var(--ol-accent); }
+  .wiki-list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 6px; }
+  .wiki-row {
+    display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px;
+    cursor: pointer;
+  }
+  .wiki-row:hover { background: var(--ol-panel-bg); }
+  .wiki-row-icon {
+    flex-shrink: 0; width: 26px; height: 26px; border-radius: 5px; display: flex;
+    align-items: center; justify-content: center; font-size: 1.05vw; font-weight: bold;
+    color: var(--ol-bg);
+  }
+  .wiki-row-icon-item { background: var(--ol-accent); }
+  .wiki-row-icon-npc { background: #c96a4a; }
+  .wiki-row-text { min-width: 0; }
+  .wiki-row-name {
+    color: var(--ol-text); font-size: 1.2vw; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .wiki-row-sub { color: var(--ol-text-tertiary); font-size: 1.0vw; }
+  .wiki-empty, .wiki-loading, .wiki-error {
+    color: var(--ol-text-tertiary); font-size: 1.15vw; text-align: center; padding: 24px 10px;
+  }
+
+  /* ---------- detail / "wiki page" view ---------- */
+  .wiki-detail { padding: 12px 14px; overflow-y: auto; }
+  .wiki-page-title {
+    color: var(--ol-text); font-size: 1.55vw; font-weight: bold; border-bottom: 2px solid #2e2818;
+    padding-bottom: 8px; margin-bottom: 4px; display: flex; align-items: center; gap: 10px;
+  }
+  .wiki-page-title .wiki-page-kind {
+    font-size: 0.62em; font-weight: normal; color: var(--ol-text-tertiary); text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .wiki-page-body { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+  .wiki-page-main { flex: 1 1 260px; min-width: 0; }
+
+  .wiki-infobox {
+    flex: 0 0 220px; width: 220px; background: var(--ol-panel-bg); border: 1px solid #2e2818;
+    border-radius: 8px; overflow: hidden;
+  }
+  .wiki-infobox-header {
+    background: var(--ol-accent); color: var(--ol-bg); font-weight: bold; font-size: 1.05vw;
+    padding: 7px 10px; text-align: center;
+  }
+  .wiki-infobox-icon {
+    display: flex; align-items: center; justify-content: center; height: 64px;
+    font-size: 1.6vw; font-weight: bold; color: var(--ol-text-tertiary);
+    border-bottom: 1px solid #2e2818; background: var(--ol-bg);
+  }
+  .wiki-infobox-table { width: 100%; border-collapse: collapse; }
+  .wiki-infobox-table tr:nth-child(even) { background: var(--ol-bg); }
+  .wiki-infobox-table td {
+    font-size: 0.98vw; padding: 5px 9px; vertical-align: top; border-top: 1px solid #241f14;
+  }
+  .wiki-infobox-table tr:first-child td { border-top: none; }
+  .wiki-infobox-table td.wiki-infobox-label { color: var(--ol-text-tertiary); white-space: nowrap; }
+  .wiki-infobox-table td.wiki-infobox-value { color: var(--ol-text); font-weight: 600; text-align: right; }
+
+  .wiki-examine {
+    color: var(--ol-text-secondary); font-size: 1.1vw; font-style: italic; line-height: 1.45;
+    margin: 10px 0 14px; border-left: 3px solid #2e2818; padding-left: 10px;
+  }
+
+  .wiki-section-title {
+    color: var(--ol-text); font-size: 1.18vw; font-weight: bold; margin: 16px 0 8px;
+    border-bottom: 1px solid #2e2818; padding-bottom: 4px;
+  }
+
+  /* combat bonuses table, OSRS-wiki style */
+  .wiki-bonus-table { width: 100%; border-collapse: collapse; font-size: 0.98vw; }
+  .wiki-bonus-table th, .wiki-bonus-table td {
+    border: 1px solid #2e2818; padding: 5px 6px; text-align: center;
+  }
+  .wiki-bonus-table th { background: var(--ol-panel-bg); color: var(--ol-text-tertiary); font-weight: 600; }
+  .wiki-bonus-table td.wiki-bonus-row-label {
+    background: var(--ol-panel-bg); color: var(--ol-text-tertiary); font-weight: 600; text-align: left;
+  }
+  .wiki-bonus-table td { color: var(--ol-text); }
+  .wiki-bonus-table td.wiki-bonus-pos { color: #7cc47f; }
+  .wiki-bonus-table td.wiki-bonus-neg { color: #d4695f; }
+
+  .wiki-other-bonuses { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 8px; }
+  .wiki-other-bonus { font-size: 0.98vw; color: var(--ol-text-secondary); }
+  .wiki-other-bonus b { color: var(--ol-accent); }
+
+  .wiki-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .wiki-action-pill {
+    background: var(--ol-panel-bg); border: 1px solid #2e2818; color: var(--ol-text-secondary);
+    border-radius: 12px; padding: 3px 10px; font-size: 1.0vw;
+  }
+`;
+
+function ensureStyleInjected() {
+  if (document.getElementById(STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = STYLE_ID;
+  style.textContent = WIKI_STYLE;
+  document.head.appendChild(style);
+}
 
 function init(api) {
   let wikiData = null; // { entries: [...] } once loaded
@@ -90,7 +210,7 @@ function init(api) {
     rows.push(['Tradeable', entry.tradeable ? 'Yes' : 'No']);
     rows.push(['Stackable', entry.stackable ? 'Yes' : 'No']);
     if (entry.equip) {
-      rows.push(['Equip slot', entry.equip.slot || 'Unknown']);
+      rows.push(['Slot', entry.equip.slot || 'Unknown']);
     }
     return rows;
   }
@@ -104,126 +224,101 @@ function init(api) {
     return rows;
   }
 
-  function combatStatsTableHtml(entry) {
-    if (entry.kind !== 'item' || !entry.equip) return '';
-    const e = entry.equip;
-    const atk = [
-      ['Stab', e.stabAttack],
-      ['Slash', e.slashAttack],
-      ['Crush', e.crushAttack],
-      ['Magic', e.magicAttack],
-      ['Range', e.rangeAttack],
-    ].filter(([, v]) => v != null && v !== 0);
-    const def = [
-      ['Stab', e.stabDefence],
-      ['Slash', e.slashDefence],
-      ['Crush', e.crushDefence],
-      ['Magic', e.magicDefence],
-      ['Range', e.rangeDefence],
-    ].filter(([, v]) => v != null && v !== 0);
-    const bonuses = [
-      ['Strength', e.strengthBonus],
-      ['Range bonus', e.rangeBonus],
-      ['Attack rate', e.attackRate],
-    ].filter(([, v]) => v != null && v !== 0);
-
-    if (!atk.length && !def.length && !bonuses.length) return '';
-
-    const cell = ([label, v]) => `<div class="wiki-stat-cell"><span>${label}</span><b>${v > 0 ? '+' : ''}${v}</b></div>`;
-
+  function infoboxHtml(entry) {
+    const rows = entry.kind === 'npc' ? infoboxRowsForNpc(entry) : infoboxRowsForItem(entry);
     return `
-      <div class="wiki-section-title">Combat Stats</div>
-      <div class="wiki-stat-grid">
-        ${[...atk, ...def, ...bonuses].map(cell).join('')}
+      <div class="wiki-infobox">
+        <div class="wiki-infobox-header">${escapeHtml(entry.name)}</div>
+        <div class="wiki-infobox-icon">${iconLetter(entry)}</div>
+        <table class="wiki-infobox-table">
+          ${rows
+            .map(
+              ([label, val]) =>
+                `<tr><td class="wiki-infobox-label">${escapeHtml(label)}</td><td class="wiki-infobox-value">${escapeHtml(
+                  val
+                )}</td></tr>`
+            )
+            .join('')}
+        </table>
       </div>
     `;
   }
 
+  function bonusCell(v) {
+    if (v == null) v = 0;
+    const cls = v > 0 ? 'wiki-bonus-pos' : v < 0 ? 'wiki-bonus-neg' : '';
+    return `<td class="${cls}">${v > 0 ? '+' : ''}${v}</td>`;
+  }
+
+  function combatStatsHtml(entry) {
+    if (entry.kind !== 'item' || !entry.equip) return '';
+    const e = entry.equip;
+    const atk = [e.stabAttack, e.slashAttack, e.crushAttack, e.magicAttack, e.rangeAttack];
+    const def = [e.stabDefence, e.slashDefence, e.crushDefence, e.magicDefence, e.rangeDefence];
+    const other = [
+      ['Strength', e.strengthBonus],
+      ['Ranged Str', e.rangeBonus],
+      ['Attack speed', e.attackRate],
+    ].filter(([, v]) => v != null && v !== 0);
+
+    const hasAtk = atk.some((v) => v != null && v !== 0);
+    const hasDef = def.some((v) => v != null && v !== 0);
+    if (!hasAtk && !hasDef && !other.length) return '';
+
+    return `
+      <div class="wiki-section-title">Combat Stats</div>
+      <table class="wiki-bonus-table">
+        <thead>
+          <tr><th></th><th>Stab</th><th>Slash</th><th>Crush</th><th>Magic</th><th>Range</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="wiki-bonus-row-label">Attack</td>${atk.map(bonusCell).join('')}</tr>
+          <tr><td class="wiki-bonus-row-label">Defence</td>${def.map(bonusCell).join('')}</tr>
+        </tbody>
+      </table>
+      ${
+        other.length
+          ? `<div class="wiki-other-bonuses">${other
+              .map(([label, v]) => `<span class="wiki-other-bonus">${label}: <b>${v > 0 ? '+' : ''}${v}</b></span>`)
+              .join('')}</div>`
+          : ''
+      }
+    `;
+  }
+
   function detailHtml(entry) {
-    const rows = entry.kind === 'npc' ? infoboxRowsForNpc(entry) : infoboxRowsForItem(entry);
     return `
       <div class="wiki-detail">
-        <div class="wiki-infobox">
-          <div class="wiki-infobox-title">${escapeHtml(entry.name)}</div>
-          ${rows
-            .map(
-              ([label, val]) =>
-                `<div class="wiki-infobox-row"><span>${escapeHtml(label)}</span><b>${escapeHtml(val)}</b></div>`
-            )
-            .join('')}
+        <div class="wiki-page-title">
+          ${escapeHtml(entry.name)}
+          <span class="wiki-page-kind">${entry.kind === 'npc' ? 'NPC' : 'Item'}</span>
         </div>
-        <div class="wiki-examine">${escapeHtml(entry.examine || 'No description available.')}</div>
-        ${combatStatsTableHtml(entry)}
-        ${
-          entry.kind === 'item' && entry.actions && entry.actions.length
-            ? `<div class="wiki-section-title">Actions</div><div class="wiki-actions">${entry.actions
-                .map((a) => `<span class="wiki-action-pill">${escapeHtml(a)}</span>`)
-                .join('')}</div>`
-            : ''
-        }
+        <div class="wiki-page-body">
+          <div class="wiki-page-main">
+            <div class="wiki-examine">${escapeHtml(entry.examine || 'No description available.')}</div>
+            ${combatStatsHtml(entry)}
+            ${
+              entry.kind === 'item' && entry.actions && entry.actions.length
+                ? `<div class="wiki-section-title">Actions</div><div class="wiki-actions">${entry.actions
+                    .map((a) => `<span class="wiki-action-pill">${escapeHtml(a)}</span>`)
+                    .join('')}</div>`
+                : ''
+            }
+          </div>
+          ${infoboxHtml(entry)}
+        </div>
       </div>
     `;
   }
 
   function renderWiki(container, exit) {
-    const style = document.createElement('style');
-    style.textContent = `
-      .wiki-root { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-      .wiki-search-wrap { padding: 8px 10px; border-bottom: 1px solid #2e2818; }
-      .wiki-search-input {
-        box-sizing: border-box; width: 100%; background: var(--ol-bg); color: var(--ol-text);
-        border: 1px solid #2e2818; border-radius: 6px; padding: 7px 9px; font-size: 1.15vw;
-        font-family: inherit;
-      }
-      .wiki-search-input:focus { outline: none; border-color: var(--ol-accent); }
-      .wiki-list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 6px; }
-      .wiki-row {
-        display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px;
-        cursor: pointer;
-      }
-      .wiki-row:hover { background: var(--ol-panel-bg); }
-      .wiki-row-icon {
-        flex-shrink: 0; width: 22px; height: 22px; border-radius: 5px; display: flex;
-        align-items: center; justify-content: center; font-size: 1.05vw; font-weight: bold;
-        color: var(--ol-bg);
-      }
-      .wiki-row-icon-item { background: var(--ol-accent); }
-      .wiki-row-icon-npc { background: #c96a4a; }
-      .wiki-row-name { color: var(--ol-text); font-size: 1.2vw; }
-      .wiki-row-sub { color: var(--ol-text-tertiary); font-size: 1.02vw; }
-      .wiki-empty { color: var(--ol-text-tertiary); font-size: 1.15vw; text-align: center; padding: 24px 10px; }
-
-      .wiki-detail { padding: 10px 12px; overflow-y: auto; }
-      .wiki-infobox {
-        background: var(--ol-panel-bg); border: 1px solid #2e2818; border-radius: 8px;
-        padding: 10px 12px; margin-bottom: 12px;
-      }
-      .wiki-infobox-title { color: var(--ol-text); font-size: 1.4vw; font-weight: bold; margin-bottom: 8px; }
-      .wiki-infobox-row {
-        display: flex; justify-content: space-between; gap: 10px; padding: 3px 0;
-        font-size: 1.08vw; border-top: 1px solid #241f14;
-      }
-      .wiki-infobox-row:first-of-type { border-top: none; }
-      .wiki-infobox-row span { color: var(--ol-text-tertiary); }
-      .wiki-infobox-row b { color: var(--ol-text); font-weight: 600; }
-      .wiki-examine { color: var(--ol-text-secondary); font-size: 1.12vw; font-style: italic; line-height: 1.4; margin-bottom: 10px; }
-      .wiki-section-title { color: var(--ol-text); font-size: 1.2vw; font-weight: bold; margin: 12px 0 6px; }
-      .wiki-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
-      .wiki-stat-cell { display: flex; justify-content: space-between; font-size: 1.05vw; color: var(--ol-text-secondary); }
-      .wiki-stat-cell b { color: var(--ol-accent); }
-      .wiki-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-      .wiki-action-pill {
-        background: var(--ol-panel-bg); border: 1px solid #2e2818; color: var(--ol-text-secondary);
-        border-radius: 12px; padding: 3px 10px; font-size: 1.02vw;
-      }
-      .wiki-loading, .wiki-error { color: var(--ol-text-tertiary); font-size: 1.15vw; text-align: center; padding: 24px 10px; }
-    `;
+    ensureStyleInjected();
 
     function paint() {
       container.innerHTML = `
         <div class="ol-list-header">
           <span class="ol-back-btn" id="wiki-back" title="Back">&#x2190;</span>
-          <span class="ol-list-title">${openEntryId ? 'Wiki' : 'Wiki'}</span>
+          <span class="ol-list-title">Wiki</span>
         </div>
         <div class="wiki-root"></div>
       `;
@@ -293,7 +388,6 @@ function init(api) {
       renderList();
     }
 
-    container.appendChild(style);
     paint();
 
     if (!wikiData && !loadError) {
@@ -310,6 +404,10 @@ function init(api) {
 function destroy() {
   // Nothing beyond what api.__cleanup() already handles (container removal,
   // settings unregistration) — no timers/tick subscriptions/overlays here.
+  // The injected <style id="ol-wiki-plugin-style"> in document.head is left
+  // in place intentionally: it's idempotent (guarded by id) and harmless to
+  // leave loaded, same as loader.js-injected global styles elsewhere in
+  // OldLite.
 }
 
 export default {
