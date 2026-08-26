@@ -431,8 +431,8 @@ function init(api) {
           <tr><th></th><th>Stab</th><th>Slash</th><th>Crush</th><th>Magic</th><th>Range</th></tr>
         </thead>
         <tbody>
-          <tr><td class="wiki-bonus-row-label">Attack</td>${atk.map(bonusCell).join('')}</tr>
-          <tr><td class="wiki-bonus-row-label">Defence</td>${def.map(bonusCell).join('')}</tr>
+          <tr><td class="wiki-bonus-row-label">ATK</td>${atk.map(bonusCell).join('')}</tr>
+          <tr><td class="wiki-bonus-row-label">DEF</td>${def.map(bonusCell).join('')}</tr>
         </tbody>
       </table>
       ${
@@ -653,7 +653,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items and NPCs.',
-  version: '1.1.0',
+  version: '1.1.1',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
