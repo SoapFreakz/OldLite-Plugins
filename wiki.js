@@ -1270,10 +1270,7 @@ function init(api) {
   }
 
   function groundSpawnsHtml(itemEntry) {
-    const locations = groundSpawnsForItem(itemEntry);
-    if (!locations.length) return '';
-    const body = locations.map((loc) => `<li>${escapeHtml(loc)}</li>`).join('');
-    return sectionHtml('Ground Spawns', `<ul class="wiki-plain-list">${body}</ul>`);
+    return '';
   }
 
   function droppedByHtml(itemEntry) {
@@ -1798,7 +1795,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
-  version: '1.1.8',
+  version: '1.0.9',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
