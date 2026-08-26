@@ -1315,7 +1315,7 @@ function init(api) {
     return sectionHtml(
       'Dropped By',
       `<table class="wiki-data-table">
-        <thead><tr><th>Monster</th><th>Quantity</th><th>Rarity</th></tr></thead>
+        <thead><tr><th>Monster</th><th>#</th><th>Rarity</th></tr></thead>
         <tbody>${body}</tbody>
       </table>`
     );
@@ -1387,7 +1387,7 @@ function init(api) {
     return sectionHtml(
       'Drops',
       `<table class="wiki-data-table">
-        <thead><tr><th>Item</th><th>Quantity</th><th>Rarity</th></tr></thead>
+        <thead><tr><th>Item</th><th>#</th><th>Rarity</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`
     );
@@ -1814,7 +1814,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
-  version: '1.1.10',
+  version: '1.1.11',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
