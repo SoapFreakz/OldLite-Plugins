@@ -138,6 +138,38 @@
 //     open that page. Free-text "any word that happens to match a page
 //     title" auto-linking was intentionally skipped per plan -- that's a
 //     separate, bigger pass over arbitrary description/examine text.
+//
+// v1.5 changes -- drop-table row redesign, nav history, scroll-to-top:
+//   - Every drop/stock/shared-table listing (item Dropped By / Shop
+//     Locations, NPC Drops, shop Stock, shared drop-table Table
+//     Contents, clue Dropped By / Scroll Steps) is now a stack of
+//     two-line rows (icon + name on line 1, qty + rarity on line 2)
+//     instead of a <table>. This fixes the King Black Dragon-style
+//     overflow (name/qty/rarity columns squeezing into 3 fixed-width
+//     table columns) and leaves room for the item/NPC sprite on each
+//     row. See dropRowHtml()/dropRowIconHtml().
+//   - Redundant clue-tier explainer subnotes ("combined per-tier chance,
+//     not per scroll step") removed from npcDropsHtml() and
+//     clueDetailHtml() -- kept only the Scroll Steps total-count note,
+//     which conveys real info rather than restating the column header.
+//   - Bank-noted items are now skipped in ALL cases (not just search/
+//     browse dedup) by detecting the examine text pattern "Swap this
+//     note at any bank for..." (isBankNoteExamine) and swapping any
+//     resolved reference to a noted entry over to its unnoted twin
+//     (unnoteEntry), called from inside resolveEntryRef itself. This
+//     fixes drop/shop rows (e.g. KBD's Iron ore drop) linking to the
+//     noted item page instead of the real one.
+//   - Shared-table references inside an NPC's roll_table rows can come
+//     wrapped in the same [ref, qty] array shape as real items (e.g.
+//     ["~randomjewel", 1]), not just as a bare "~name" string --
+//     parseDropItemField now checks for that case first so these link to
+//     the real drop-table page instead of printing raw "~randomjewel"
+//     text.
+//   - Back button now pops a real navigation history stack (list ->
+//     item -> cross-referenced NPC -> ... each push their own entry)
+//     instead of collapsing straight to search/home. Clicking the "Wiki"
+//     panel title jumps straight to the home page and clears history.
+//     Opening any new detail page scrolls the panel back to the top.
 
 const WIKI_DATA_URL =
   'https://raw.githubusercontent.com/SoapFreakz/OldLite-Plugins/main/wiki-data/wiki.json';
@@ -298,40 +330,24 @@ const WIKI_STYLE = `
   .wiki-other-bonus { font-size: 0.85em; color: var(--ol-text-secondary); }
   .wiki-other-bonus b { color: var(--ol-accent); }
 
-  /* ---------- generic data tables: shop stock, drops, drop-table rows ---------- */
-    .wiki-data-table {
-    width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse;
-    font-size: 0.75em; margin-bottom: 0.4em;
+  /* ---------- drop / stock / shared-table rows (icon+name, then qty+rarity) ---------- */
+  .wiki-drop-list { margin-bottom: 0.4em; }
+  .wiki-drop-row {
+    display: flex; align-items: center; gap: 0.7em; padding: 0.5em 0.3em;
+    border-top: 1px solid #241f14;
   }
-.wiki-data-table {
-  width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse;
-  font-size: 0.9em; margin-bottom: 0.4em;
-}
-
-.wiki-data-table th, .wiki-data-table td {
-  border: 1px solid #2e2818; padding: 0.4em 0.55em; text-align: left; vertical-align: middle;
-  overflow-wrap: break-word; word-break: break-word;
-}
-
-.wiki-data-table th:nth-child(1),
-.wiki-data-table td:nth-child(1) { width: 60%; }
-
-.wiki-data-table th:nth-child(2),
-.wiki-data-table td:nth-child(2) { width: 12%; }
-
-.wiki-data-table th:nth-child(3),
-.wiki-data-table td:nth-child(3) { width: 28%; }
-
-.wiki-data-table th {
-  background: var(--ol-panel-bg); color: var(--ol-text-tertiary); font-weight: 600;
-}
-
-  .wiki-data-table th {
-    background: var(--ol-panel-bg); color: var(--ol-text-tertiary); font-weight: 600;
+  .wiki-drop-row:first-child { border-top: none; }
+  .wiki-drop-icon {
+    flex-shrink: 0; width: 1.9em; height: 1.9em; border-radius: 0.4em;
+    background: var(--ol-bg); image-rendering: pixelated; image-rendering: crisp-edges;
   }
-  .wiki-data-table tr:nth-child(even) td { background: var(--ol-bg); }
-  .wiki-data-table td.wiki-data-num { text-align: right; color: var(--ol-text); white-space: normal; }
-  .wiki-data-table td.wiki-data-name { color: var(--ol-text); }
+  .wiki-drop-body { flex: 1; min-width: 0; }
+  .wiki-drop-name { color: var(--ol-accent); font-size: 0.95em; overflow-wrap: break-word; word-break: break-word; }
+  .wiki-drop-meta {
+    display: flex; justify-content: space-between; gap: 0.6em; color: var(--ol-text-tertiary);
+    font-size: 0.8em; margin-top: 0.15em;
+  }
+
   .wiki-link {
     color: var(--ol-accent); cursor: pointer; text-decoration: none;
   }
@@ -499,6 +515,7 @@ function init(api) {
   let searchText = '';
   let browseAll = false; // true once user hits "Browse all" from the home page
   let openEntryId = null; // null = list/home view, else showing that entry's page
+  let navStack = []; // stack of previous {openEntryId, browseAll, searchText} states, for Back
 
   function fetchWikiData() {
     if (loadPromise) return loadPromise;
@@ -541,6 +558,11 @@ function init(api) {
     return typeof entry?.examine === 'string' && /swap this note at any bank for/i.test(entry.examine);
   }
 
+  // Redirects a resolved entry that turns out to be the noted (bank-note)
+  // form of an item over to its real, unnoted twin (matched by exact
+  // name). Called from inside resolveEntryRef so every drop row / shop
+  // row / cross-reference link gets the real item page in ALL cases, not
+  // just search/browse.
   function unnoteEntry(entry) {
     if (!entry || !isBankNoteExamine(entry)) return entry;
     const name = safeName(entry).trim().toLowerCase();
@@ -976,7 +998,10 @@ function init(api) {
   //   always row:     { item: ["dragon_bones", 1] }               (no chance -- 100%)
   //   tertiary row:   { item: "~clue-hard", chance: "1/128" }      (pre-formatted fraction)
   // So `item` is an [debugname, qty] pair for real items, or a bare
-  // "~tablekey" string for shared-table pointers. qty itself can be a
+  // "~tablekey" string for shared-table pointers -- but a shared-table
+  // pointer can ALSO come wrapped in the same [ref, qty] array shape as a
+  // real item (e.g. ["~randomjewel", 1]), so that has to be checked
+  // before assuming array form means "real item". qty itself can be a
   // plain number or a range string like "1-2".
   function parseDropItemField(item) {
     if (isSharedTableRef(item)) {
@@ -1284,6 +1309,37 @@ function init(api) {
     return `<div class="wiki-empty-section">${escapeHtml(text)}</div>`;
   }
 
+  // ---- shared two-line drop/stock row builder ----
+  //
+  // Every "item + quantity + rarity/price" listing in the wiki (item
+  // Dropped By / Shop Locations, NPC Drops, shop Stock, shared drop-table
+  // Table Contents, clue Dropped By / Scroll Steps) renders through this
+  // instead of a <table>: icon + name on the first line, quantity and
+  // rarity/price as a quiet two-column line underneath. This is what
+  // fixed the King Black Dragon-style overflow (long names + wide "#"/
+  // "Rarity" columns squeezing past the panel edge) and leaves room for
+  // the sprite icon on every row.
+  function dropRowIconHtml(entry) {
+    if (!entry) return '';
+    if (hasSprite(entry)) return spriteCanvasHtml(entry, null, 'wiki-drop-icon');
+    return '<div class="wiki-drop-icon"></div>';
+  }
+
+  function dropRowHtml({ iconHtml, nameHtml, qtyLabel, oddsLabel }) {
+    const metaParts = [];
+    if (qtyLabel) metaParts.push(`<span>${qtyLabel}</span>`);
+    if (oddsLabel) metaParts.push(`<span>${oddsLabel}</span>`);
+    const metaHtml = metaParts.length ? `<div class="wiki-drop-meta">${metaParts.join('')}</div>` : '';
+    return `
+      <div class="wiki-drop-row">
+        ${iconHtml || ''}
+        <div class="wiki-drop-body">
+          <div class="wiki-drop-name">${nameHtml}</div>
+          ${metaHtml}
+        </div>
+      </div>`;
+  }
+
   // ---- item page additions: shop locations / ground spawns / dropped by ----
 
   function shopLocationsHtml(itemEntry) {
@@ -1291,25 +1347,23 @@ function init(api) {
     const rows = (derived.shops.byItemId.get(itemEntry.id) || []);
     if (!rows.length) return sectionHtml('Shop Locations', emptySection('Not sold in any shop.'));
     const body = rows
-      .map(
-        ({ shopEntry, qty, price }) => `
-          <tr>
-            <td class="wiki-data-name">${linkHtml(shopEntry)}</td>
-            <td class="wiki-data-num">${qty != null ? escapeHtml(String(qty)) : '&mdash;'}</td>
-            <td class="wiki-data-num">${price != null ? `${price.toLocaleString()} gp` : '&mdash;'}</td>
-          </tr>`
+      .map(({ shopEntry, qty, price }) =>
+        dropRowHtml({
+          iconHtml: '',
+          nameHtml: linkHtml(shopEntry),
+          qtyLabel: qty != null ? `Stock: ${qty}` : null,
+          oddsLabel: price != null ? `${price.toLocaleString()} gp` : null,
+        })
       )
       .join('');
-    return sectionHtml(
-      'Shop Locations',
-      `<table class="wiki-data-table">
-        <thead><tr><th>Shop</th><th>Stock</th><th>Price</th></tr></thead>
-        <tbody>${body}</tbody>
-      </table>`
-    );
+    return sectionHtml('Shop Locations', `<div class="wiki-drop-list">${body}</div>`);
   }
 
   function groundSpawnsHtml(itemEntry) {
+    // NOT wired in yet: there's no ground-spawn data source in wiki.json
+    // (no field on item entries, no top-level table like `shops` /
+    // `sharedDropTables`) to read this from yet. No-op until that data
+    // exists.
     return '';
   }
 
@@ -1318,26 +1372,19 @@ function init(api) {
     const rows = derived.npcDropIndex.byItemId.get(itemEntry.id) || [];
     if (!rows.length) return '';
     const body = rows
-      .map(
-        ({ npcEntry, odds, min, max }) => `
-          <tr>
-            <td class="wiki-data-name">${linkHtml(npcEntry)}</td>
-            <td class="wiki-data-num">${
-              min != null || max != null
-                ? escapeHtml(min === max || max == null ? String(min) : `${min}-${max}`)
-                : '&mdash;'
-            }</td>
-            <td class="wiki-data-num">${odds ? escapeHtml(odds) : '&mdash;'}</td>
-          </tr>`
+      .map(({ npcEntry, odds, min, max }) =>
+        dropRowHtml({
+          iconHtml: dropRowIconHtml(npcEntry),
+          nameHtml: linkHtml(npcEntry),
+          qtyLabel:
+            min != null || max != null
+              ? `Qty: ${min === max || max == null ? min : `${min}-${max}`}`
+              : null,
+          oddsLabel: odds || null,
+        })
       )
       .join('');
-    return sectionHtml(
-      'Dropped By',
-      `<table class="wiki-data-table">
-        <thead><tr><th>Monster</th><th>#</th><th>Rarity</th></tr></thead>
-        <tbody>${body}</tbody>
-      </table>`
-    );
+    return sectionHtml('Dropped By', `<div class="wiki-drop-list">${body}</div>`);
   }
 
   // ---- npc page additions: drops table / shop reference ----
@@ -1357,24 +1404,24 @@ function init(api) {
       const target = tier
         ? derived.clues.find((c) => c.tier === tier)
         : derived.dropTables.byKey.get(tableKey);
-      return `
-        <tr>
-          <td class="wiki-data-name">${linkHtml(target, target ? safeName(target) || target.name : prettifyTableName(tableKey))}</td>
-          <td class="wiki-data-num">&mdash;</td>
-          <td class="wiki-data-num">${odds ? escapeHtml(odds) : '&mdash;'}</td>
-        </tr>`;
+      return dropRowHtml({
+        iconHtml: '',
+        nameHtml: linkHtml(target, target ? safeName(target) || target.name : prettifyTableName(tableKey)),
+        qtyLabel: null,
+        oddsLabel: odds || null,
+      });
     }
 
     function itemRowHtml(itemEntry, ref, qty, odds) {
       const label = itemEntry ? linkHtml(itemEntry) : escapeHtml(String(ref));
       const { min, max } = parseQtyRange(qty);
-      const qtyLabel = min != null ? (min === max ? String(min) : `${min}-${max}`) : null;
-      return `
-        <tr>
-          <td class="wiki-data-name">${label}</td>
-          <td class="wiki-data-num">${qtyLabel ? escapeHtml(qtyLabel) : '&mdash;'}</td>
-          <td class="wiki-data-num">${odds ? escapeHtml(odds) : '&mdash;'}</td>
-        </tr>`;
+      const qtyLabel = min != null ? `Qty: ${min === max ? min : `${min}-${max}`}` : null;
+      return dropRowHtml({
+        iconHtml: dropRowIconHtml(itemEntry),
+        nameHtml: label,
+        qtyLabel,
+        oddsLabel: odds || null,
+      });
     }
 
     function rollRowHtml(row) {
@@ -1403,13 +1450,7 @@ function init(api) {
       ...tertiaryRows.map(tertiaryRowHtml),
     ].join('');
 
-    return sectionHtml(
-      'Drops',
-      `<table class="wiki-data-table">
-        <thead><tr><th>Item</th><th>#</th><th>Rarity</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`
-    );
+    return sectionHtml('Drops', `<div class="wiki-drop-list">${rows}</div>`);
   }
 
   function npcShopRefHtml(npcEntry) {
@@ -1429,12 +1470,12 @@ function init(api) {
     const rows = shopEntry.stockRows
       .map((row) => {
         const label = row.itemEntry ? linkHtml(row.itemEntry) : escapeHtml(String(row.itemRef));
-        return `
-          <tr>
-            <td class="wiki-data-name">${label}</td>
-            <td class="wiki-data-num">${row.qty != null ? escapeHtml(String(row.qty)) : '&mdash;'}</td>
-            <td class="wiki-data-num">${row.price != null ? `${row.price.toLocaleString()} gp` : '&mdash;'}</td>
-          </tr>`;
+        return dropRowHtml({
+          iconHtml: dropRowIconHtml(row.itemEntry),
+          nameHtml: label,
+          qtyLabel: row.qty != null ? `Stock: ${row.qty}` : null,
+          oddsLabel: row.price != null ? `${row.price.toLocaleString()} gp` : null,
+        });
       })
       .join('');
 
@@ -1453,10 +1494,7 @@ function init(api) {
         ${sectionHtml(
           'Stock',
           shopEntry.stockRows.length
-            ? `<table class="wiki-data-table">
-                <thead><tr><th>Item</th><th>Stock</th><th>Price</th></tr></thead>
-                <tbody>${rows}</tbody>
-              </table>`
+            ? `<div class="wiki-drop-list">${rows}</div>`
             : emptySection('No stock data available.')
         )}
       </div>
@@ -1473,33 +1511,27 @@ function init(api) {
       .map((row) => {
         if (row.floorConditional) {
           const { aboveground, underground } = row.floorConditional;
-          const noteHtml = row.note ? `<div class="wiki-subnote">${escapeHtml(row.note)}</div>` : '';
-          return `
-            <tr>
-              <td class="wiki-data-name">Aboveground: ${
-                aboveground ? linkHtml(aboveground) : '&mdash;'
-              }<br>Underground: ${underground ? linkHtml(underground) : '&mdash;'}${noteHtml}</td>
-              <td class="wiki-data-num">${row.odds ? escapeHtml(row.odds) : '&mdash;'}</td>
-            </tr>`;
+          const nameHtml = `Aboveground: ${
+            aboveground ? linkHtml(aboveground) : '&mdash;'
+          }<br>Underground: ${underground ? linkHtml(underground) : '&mdash;'}`;
+          const rowHtml = dropRowHtml({ iconHtml: '', nameHtml, qtyLabel: null, oddsLabel: row.odds || null });
+          return rowHtml + (row.note ? `<div class="wiki-subnote">${escapeHtml(row.note)}</div>` : '');
         }
         if (row.tableRef) {
           const target = derived.dropTables.byKey.get(row.tableRef);
           const label = linkHtml(target, target ? target.name : prettifyTableName(row.tableRef));
-          const noteHtml = row.note ? `<div class="wiki-subnote">${escapeHtml(row.note)}</div>` : '';
-          return `
-            <tr>
-              <td class="wiki-data-name">${label}${noteHtml}</td>
-              <td class="wiki-data-num">${row.odds ? escapeHtml(row.odds) : '&mdash;'}</td>
-            </tr>`;
+          const rowHtml = dropRowHtml({ iconHtml: '', nameHtml: label, qtyLabel: null, oddsLabel: row.odds || null });
+          return rowHtml + (row.note ? `<div class="wiki-subnote">${escapeHtml(row.note)}</div>` : '');
         }
         const label = row.itemEntry ? linkHtml(row.itemEntry) : escapeHtml(String(row.itemRef));
-        const qtyLabel = row.qty != null && row.qty !== 1 ? ` (${row.qty})` : '';
-        const noteHtml = row.note ? `<div class="wiki-subnote">${escapeHtml(row.note)}</div>` : '';
-        return `
-          <tr>
-            <td class="wiki-data-name">${label}${escapeHtml(qtyLabel)}${noteHtml}</td>
-            <td class="wiki-data-num">${row.odds ? escapeHtml(row.odds) : '&mdash;'}</td>
-          </tr>`;
+        const qtyLabel = row.qty != null && row.qty !== 1 ? `Qty: ${row.qty}` : null;
+        const rowHtml = dropRowHtml({
+          iconHtml: dropRowIconHtml(row.itemEntry),
+          nameHtml: label,
+          qtyLabel,
+          oddsLabel: row.odds || null,
+        });
+        return rowHtml + (row.note ? `<div class="wiki-subnote">${escapeHtml(row.note)}</div>` : '');
       })
       .join('');
 
@@ -1509,12 +1541,13 @@ function init(api) {
         : '';
 
     const droppedByBody = droppedBy
-      .map(
-        ({ npcEntry, odds }) => `
-          <tr>
-            <td class="wiki-data-name">${linkHtml(npcEntry)}</td>
-            <td class="wiki-data-num">${odds ? escapeHtml(odds) : '&mdash;'}</td>
-          </tr>`
+      .map(({ npcEntry, odds }) =>
+        dropRowHtml({
+          iconHtml: dropRowIconHtml(npcEntry),
+          nameHtml: linkHtml(npcEntry),
+          qtyLabel: null,
+          oddsLabel: odds || null,
+        })
       )
       .join('');
 
@@ -1526,19 +1559,13 @@ function init(api) {
         </div>
         ${sectionHtml(
           'Table Contents',
-          `<table class="wiki-data-table">
-            <thead><tr><th>Item</th><th>Odds</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
+          `<div class="wiki-drop-list">${rows}</div>
           ${rowOfWealthNote}`
         )}
         ${sectionHtml(
           'Dropped By',
           droppedBy.length
-            ? `<table class="wiki-data-table">
-                <thead><tr><th>Monster</th><th>Roll Chance</th></tr></thead>
-                <tbody>${droppedByBody}</tbody>
-              </table>`
+            ? `<div class="wiki-drop-list">${droppedByBody}</div>`
             : emptySection('No monster currently references this table.')
         )}
       </div>
@@ -1549,17 +1576,20 @@ function init(api) {
 
   function clueDetailHtml(clueEntry) {
     const droppedByBody = clueEntry.droppedBy
-      .map(
-        ({ npcEntry, odds }) => `
-          <tr>
-            <td class="wiki-data-name">${linkHtml(npcEntry)}</td>
-            <td class="wiki-data-num">${odds ? escapeHtml(odds) : '&mdash;'}</td>
-          </tr>`
+      .map(({ npcEntry, odds }) =>
+        dropRowHtml({
+          iconHtml: dropRowIconHtml(npcEntry),
+          nameHtml: linkHtml(npcEntry),
+          qtyLabel: null,
+          oddsLabel: odds || null,
+        })
       )
       .join('');
 
     const subtypeBody = clueEntry.bySubtype
-      .map(([subtype, count]) => `<tr><td class="wiki-data-name">${escapeHtml(subtype)}</td><td class="wiki-data-num">${count}</td></tr>`)
+      .map(([subtype, count]) =>
+        dropRowHtml({ iconHtml: '', nameHtml: escapeHtml(subtype), qtyLabel: null, oddsLabel: `${count}` })
+      )
       .join('');
 
     return `
@@ -1571,19 +1601,13 @@ function init(api) {
         ${sectionHtml(
           'Dropped By',
           clueEntry.droppedBy.length
-            ? `<table class="wiki-data-table">
-                <thead><tr><th>Monster</th><th>Chance</th></tr></thead>
-                <tbody>${droppedByBody}</tbody>
-              </table>`
+            ? `<div class="wiki-drop-list">${droppedByBody}</div>`
             : emptySection('No monster currently drops this clue tier.')
         )}
         ${sectionHtml(
           'Scroll Steps',
           clueEntry.bySubtype.length
-            ? `<table class="wiki-data-table">
-                <thead><tr><th>Step Type</th><th>Count</th></tr></thead>
-                <tbody>${subtypeBody}</tbody>
-              </table>
+            ? `<div class="wiki-drop-list">${subtypeBody}</div>
               <div class="wiki-subnote">${clueEntry.totalSteps} possible ${clueEntry.tier} clue steps in total, grouped by type.</div>`
             : emptySection('No scroll-step data available for this tier.')
         )}
@@ -1648,26 +1672,51 @@ function init(api) {
   function renderWiki(container, exit) {
     ensureStyleInjected();
 
+    // Pushes the current navigation state onto the history stack before
+    // switching to a new page, so goBack() can pop back to exactly where
+    // the user was (list -> item -> cross-referenced NPC -> ... each own
+    // their own history entry) instead of collapsing straight back to
+    // search/home like the old two-level back logic did.
+    function pushHistory() {
+      navStack.push({ openEntryId, browseAll, searchText });
+    }
+
+    // Clicking the "Wiki" panel title always jumps straight to the home
+    // page and clears history — a hard reset, not a "go back one step".
+    function goHome() {
+      navStack = [];
+      openEntryId = null;
+      browseAll = false;
+      searchText = '';
+      paint();
+    }
+
+    function goBack() {
+      if (navStack.length) {
+        const prev = navStack.pop();
+        openEntryId = prev.openEntryId;
+        browseAll = prev.browseAll;
+        searchText = prev.searchText;
+        paint();
+        return;
+      }
+      if (openEntryId || browseAll || searchText) {
+        goHome();
+        return;
+      }
+      exit();
+    }
+
     function paint() {
       container.innerHTML = `
         <div class="ol-list-header">
           <span class="ol-back-btn" id="wiki-back" title="Back">&#x2190;</span>
-          <span class="ol-list-title">Wiki</span>
+          <span class="ol-list-title" id="wiki-home-link" title="Wiki home" style="cursor:pointer;">Wiki</span>
         </div>
         <div class="wiki-root"></div>
       `;
-      container.querySelector('#wiki-back').addEventListener('click', () => {
-        if (openEntryId) {
-          openEntryId = null;
-          paint();
-        } else if (browseAll || searchText) {
-          browseAll = false;
-          searchText = '';
-          paint();
-        } else {
-          exit();
-        }
-      });
+      container.querySelector('#wiki-back').addEventListener('click', goBack);
+      container.querySelector('#wiki-home-link').addEventListener('click', goHome);
 
       const root = container.querySelector('.wiki-root');
 
@@ -1689,12 +1738,21 @@ function init(api) {
         }
         root.innerHTML = detailHtml(entry);
         renderSpritesIn(root);
+        // Scroll back to the top of the panel every time a new detail
+        // page opens, so cross-reference navigation (e.g. item ->
+        // dropped-by NPC -> that NPC's own drop table) doesn't leave the
+        // view stuck wherever the previous page happened to be scrolled.
+        const detailEl = root.querySelector('.wiki-detail');
+        if (detailEl) detailEl.scrollTop = 0;
+        root.scrollTop = 0;
+        container.scrollTop = 0;
         // Cross-reference links inside the page body (shop stock rows,
         // drop table rows, "Dropped By" monster names, etc.) — same
         // open-by-id mechanism as the list rows, just delegated over
         // whatever wiki-link spans detailHtml happened to render.
         root.querySelectorAll('[data-open]').forEach((link) => {
           link.addEventListener('click', () => {
+            pushHistory();
             openEntryId = link.dataset.open;
             paint();
           });
@@ -1725,6 +1783,7 @@ function init(api) {
         const browseAllBtn = root.querySelector('#wiki-browse-all');
         if (browseAllBtn) {
           browseAllBtn.addEventListener('click', () => {
+            pushHistory();
             browseAll = true;
             paint();
           });
@@ -1745,7 +1804,14 @@ function init(api) {
       });
 
       searchInput.addEventListener('input', () => {
-        searchText = searchInput.value;
+        // Only push a history entry on the transition OUT of the home
+        // page (first keystroke), not on every keystroke thereafter —
+        // otherwise Back would step through the typed text letter by
+        // letter instead of returning to the home page.
+        const wasHome = !openEntryId && !browseAll && !searchText.trim();
+        const newValue = searchInput.value;
+        if (wasHome && newValue.trim()) pushHistory();
+        searchText = newValue;
         if (searchText.trim()) browseAll = false;
         // A fresh keystroke changes whether we're in list view or home view,
         // so this needs a full repaint, not just a list refresh.
@@ -1760,11 +1826,7 @@ function init(api) {
 
       const browseLink = root.querySelector('#wiki-to-home');
       if (browseLink) {
-        browseLink.addEventListener('click', () => {
-          browseAll = false;
-          searchText = '';
-          paint();
-        });
+        browseLink.addEventListener('click', goHome);
       }
 
       const q = searchText.trim().toLowerCase();
@@ -1796,6 +1858,7 @@ function init(api) {
         : `<div class="wiki-empty">No matches.</div>`;
       listEl.querySelectorAll('[data-open]').forEach((row) => {
         row.addEventListener('click', () => {
+          pushHistory();
           openEntryId = row.dataset.open;
           paint();
         });
@@ -1833,7 +1896,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
-  version: '1.1.15',
+  version: '1.5.0',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
