@@ -3,7 +3,7 @@
 // A single searchable OSRS-wiki-style reference for items and NPCs,
 // merged into one list (not split into separate "items" / "npcs" sections
 // like losthq's own db pages) with hyperlink-style navigation between
-// pages.
+// pages. 
 //
 // BASELINE SCOPE (see scripts/build-wiki-data.js for the full rationale):
 //   - Data comes from ONE prebuilt file, wiki-data/wiki.json, fetched at
