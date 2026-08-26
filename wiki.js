@@ -557,7 +557,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items and NPCs.',
-  version: '1.0.5',
+  version: '1.0.8',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
