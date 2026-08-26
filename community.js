@@ -47,7 +47,7 @@
 
 const DISCORD_URL = 'https://discord.gg/52xw9H3YqT';
 const WEBSITE_URL = 'https://www.oldrune.com';
-const COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12 hours
+const COOLDOWN_MS = 10; // 12 hours
 
 const USERNAME_KEY = 'username';
 const VOTE_STATE_KEY = 'voteState';
@@ -558,7 +558,7 @@ export default {
   id: 'community-hub',
   name: 'Community Hub',
   description: 'Discord, website, and vote-site shortcuts with in-client voting and a 12h cooldown tracker.',
-  version: '1.0.2',
+  version: '1.0.4',
   author: 'goku',
   native: true,
   icon: 'Community.png',
