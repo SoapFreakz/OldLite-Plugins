@@ -76,6 +76,20 @@ function fmt(totalSeconds) {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
+function fmtSw(ms) {
+  ms = Math.max(0, ms);
+  const totalCs = Math.floor(ms / 10); // centiseconds (2-digit)
+  const cs = totalCs % 100;
+  const totalSeconds = Math.floor(totalCs / 100);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  const mm = String(m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  const cc = String(cs).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}:${cc}` : `${mm}:${ss}:${cc}`;
+}
+
 function clampMinutes(v) {
   v = Math.floor(Number(v));
   if (!isFinite(v) || v < 0) v = 0;
@@ -462,7 +476,7 @@ function init(api) {
         <span class="sw-popout-close" title="Close">&times;</span>
       </div>
       <div class="sw-popout-body">
-        <div class="sw-display" id="sw-po-display">${fmt(swElapsedMs() / 1000)}</div>
+        <div class="sw-display" id="sw-po-display">${fmtSw(swElapsedMs())}</div>
         <div class="sw-btn-row">
           <span class="sw-btn sw-btn-primary" id="sw-po-toggle">${sw.running ? 'Stop' : 'Start'}</span>
           <span class="sw-btn" id="sw-po-lap">Lap</span>
@@ -617,8 +631,8 @@ function init(api) {
         (l) => `
         <div class="sw-lap-row">
           <span class="sw-lap-num">#${l.n}</span>
-          <span class="sw-lap-time">${fmt(l.lapMs / 1000)}</span>
-          <span class="sw-lap-total">${fmt(l.totalMs / 1000)}</span>
+          <span class="sw-lap-time">${fmtSw(l.lapMs)}</span>
+          <span class="sw-lap-total">${fmtSw(l.totalMs)}</span>
         </div>`
       )
       .join('');
@@ -627,7 +641,7 @@ function init(api) {
   // ---- refresh: pushes engine state into whichever UI(s) are mounted ----
 
   function refreshSwUi() {
-    const display = fmt(swElapsedMs() / 1000);
+    const display = fmtSw(swElapsedMs());
     const toggleLabel = sw.running ? 'Stop' : 'Start';
 
     if (mainView) {
@@ -725,7 +739,7 @@ function init(api) {
   api.onTick(() => {
     reconcileCountdown();
     refreshAll();
-  }, 200);
+  }, 30);
 
   // ---- main tab markup ----
 
@@ -754,7 +768,7 @@ function init(api) {
           <span class="sw-section-title">Count Up</span>
           <span class="sw-popout-btn${swPopout ? ' active' : ''}" id="sw-up-popout" title="Pop out">&#x2197;</span>
         </div>
-        <div class="sw-display" id="sw-display">${fmt(swElapsedMs() / 1000)}</div>
+        <div class="sw-display" id="sw-display">${fmtSw(swElapsedMs())}</div>
         <div class="sw-btn-row">
           <span class="sw-btn sw-btn-primary" id="sw-up-toggle">${sw.running ? 'Stop' : 'Start'}</span>
           <span class="sw-btn${sw.running ? '' : ' sw-btn-disabled'}" id="sw-up-lap">Lap</span>
