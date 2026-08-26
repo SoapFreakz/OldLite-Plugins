@@ -267,7 +267,7 @@ const WIKI_STYLE = `
   .wiki-infobox-table { width: 100%; border-collapse: collapse; }
   .wiki-infobox-table tr:nth-child(even) { background: var(--ol-bg); }
   .wiki-infobox-table td {
-    font-size: 0.7em; padding: 0.2em 0.65em; vertical-align: top; border-top: 1px solid #241f14;
+    font-size: 0.9em; padding: 0.2em 0.65em; vertical-align: top; border-top: 1px solid #241f14;
   }
   .wiki-infobox-table tr:first-child td { border-top: none; }
   .wiki-infobox-table td.wiki-infobox-label { color: var(--ol-text-tertiary); white-space: nowrap; }
@@ -301,10 +301,10 @@ const WIKI_STYLE = `
   /* ---------- generic data tables: shop stock, drops, drop-table rows ---------- */
     .wiki-data-table {
     width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse;
-    font-size: 0.9em; margin-bottom: 0.4em;
+    font-size: 0.75em; margin-bottom: 0.4em;
   }
   .wiki-data-table th, .wiki-data-table td {
-    border: 1px solid #2e2818; padding: 0.4em 0.55em; text-align: left; vertical-align: middle;
+    border: 1px solid #2e2818; padding: 0.4em 0.55em; text-align: middle; vertical-align: middle;
     overflow-wrap: break-word; word-break: break-word;
   }
   .wiki-data-table th {
@@ -318,7 +318,7 @@ const WIKI_STYLE = `
   }
   .wiki-link:hover { text-decoration: underline; }
   .wiki-subnote {
-    color: var(--ol-text-tertiary); font-size: 0.85em; font-style: italic; margin: -0.2em 0 0.6em;
+    color: var(--ol-text-tertiary); font-size: 0.75em; font-style: italic; margin: -0.2em 0 0.6em;
   }
   .wiki-empty-section {
     color: var(--ol-text-tertiary); font-size: 0.9em; font-style: italic; padding: 0.3em 0 0.6em;
@@ -1814,7 +1814,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
-  version: '1.1.12',
+  version: '1.1.13',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
