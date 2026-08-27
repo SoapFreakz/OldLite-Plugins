@@ -98,7 +98,7 @@ export default {
   name: 'TileMan Mode',
   description:
     'Unlock the world of Gielinor 1 tile at a time',
-  version: '1.0.1',
+  version: '1.1.0',
   author: 'goku',
   native: false,
 
