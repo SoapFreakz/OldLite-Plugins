@@ -1498,12 +1498,12 @@ function matchesSearch(entry, q) {
     const rows = (derived.shops.byItemId.get(itemEntry.id) || []);
     if (!rows.length) return sectionHtml('Shop Locations', emptySection('Not sold in any shop.'));
     const body = rows
-      .map(({ shopEntry, qty, price }) =>
+      .map(({ shopEntry, qty }) =>
         dropRowHtml({
           iconHtml: '',
           nameHtml: linkHtml(shopEntry),
           qtyLabel: qty != null ? `Stock: ${qty}` : null,
-          oddsLabel: price != null ? `${price.toLocaleString()} gp` : null,
+          oddsLabel: null,
         })
       )
       .join('');
@@ -1631,11 +1631,11 @@ function matchesSearch(entry, q) {
           <tr>
             <td class="wiki-shop-col-item"><span class="wiki-shop-item-inner">${icon}${label}</span></td>
             <td class="wiki-shop-col-num">${row.qty != null ? Number(row.qty).toLocaleString() : '&mdash;'}</td>
-            <td class="wiki-shop-col-num">${row.price != null ? `${Number(row.price).toLocaleString()} gp` : '&mdash;'}</td>
           </tr>`;
       })
       .join('');
 
+    
     return `
       <div class="wiki-detail">
         <div class="wiki-page-title">
@@ -1654,7 +1654,7 @@ function matchesSearch(entry, q) {
           'Stock',
           shopEntry.stockRows.length
             ? `<table class="wiki-shop-table">
-                 <thead><tr><th>Item</th><th class="wiki-shop-col-num">Stock</th><th class="wiki-shop-col-num">Cost</th></tr></thead>
+                 <thead><tr><th>Item</th><th class="wiki-shop-col-num">Stock</th></tr></thead>
                  <tbody>${rows}</tbody>
                </table>`
             : emptySection('No stock data available.')
@@ -2135,7 +2135,7 @@ export default {
   id: 'wiki',
   name: 'Wiki',
   description: 'Searchable in-client wiki for items, NPCs, shops, and drop tables.',
-  version: '1.7.2',
+  version: '1.8.0',
   author: 'goku',
   native: true,
   icon: 'Wiki.png',
