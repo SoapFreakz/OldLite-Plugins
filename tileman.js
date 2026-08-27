@@ -343,17 +343,6 @@ export default {
           return false; // stay on the settings view, same as the reference behavior
         }
         if (actionId === 'save') {
-          const costChanged =
-            draft.xpPerTile !== settings.xpPerTile ||
-            draft.restrictionEnabled !== settings.restrictionEnabled ||
-            draft.restrictionStepXp !== settings.restrictionStepXp ||
-            draft.restrictionStepIncrease !== settings.restrictionStepIncrease;
-          if (costChanged) {
-            if (!confirm('Changing how much xp a tile costs will reset all of your currently unlocked tiles, to keep things fair. Continue?')) {
-              return false;
-            }
-            resetAllTiles();
-          }
           settings = { ...draft };
           saveSettings();
           syncHudWidth();
