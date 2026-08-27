@@ -98,12 +98,32 @@ export default {
   name: 'TileMan Mode',
   description:
     'Unlock the world of Gielinor 1 tile at a time',
-  version: '1.1.0',
+  version: '1.2.0',
   author: 'goku',
   native: false,
 
   init(api) {
     const s = this;
+
+    // ---- LOGIN-STATE OVERRIDE ----
+    // api.isAtLoginScreen() relies on loader.js's CLIENT_MAP, which is baked
+    // into the packaged app and has drifted out of sync with this client
+    // build's obfuscated property names (loginState/loadingState no longer
+    // point at the right fields there). Since tileman.js is fetched live
+    // from GitHub at runtime, we can ship a fix here immediately without
+    // waiting on a repackage/redistribution of the app. This re-implements
+    // the exact same logic loader.js uses, but against the confirmed-correct
+    // raw field names for this build (Tv/Pz), read straight off the live
+    // client object via api.getClient() instead of going through api.raw().
+    function isAtLoginScreen() {
+      const client = api.getClient();
+      if (!client) return true;
+      const loginState = client.Tv;
+      const loadingState = client.Pz;
+      if (loginState === 0) return true;
+      if (loginState === 2 && loadingState === 0) return true;
+      return false;
+    }
 
     let visitedTiles = new Map();
     let settings = { ...DEFAULT_SETTINGS, ...api.storage.get('settings', {}) };
@@ -228,7 +248,7 @@ export default {
     function updateHud(stats) {
       if (!hudEl) return;
       const client = api.getClient();
-      if (!client || api.isAtLoginScreen() || api.isModalOpen()) {
+      if (!client || isAtLoginScreen() || api.isModalOpen()) {
         hudEl.style.display = 'none';
         return;
       }
@@ -270,7 +290,7 @@ export default {
     function updateLogoVisibility() {
       if (!logoEl) return;
       positionLogo();
-      logoEl.style.display = api.isAtLoginScreen() ? 'block' : 'none';
+      logoEl.style.display = isAtLoginScreen() ? 'block' : 'none';
     }
 
     // ---- SETTINGS ----
@@ -427,7 +447,7 @@ export default {
       e.preventDefault();
       e.stopPropagation();
       const client = api.getClient();
-      if (!client || api.isModalOpen() || api.isAtLoginScreen()) return;
+      if (!client || api.isModalOpen() || isAtLoginScreen()) return;
 
       const rect = overlay.canvas.getBoundingClientRect();
       const scaleX = overlay.canvas.width / rect.width;
@@ -467,7 +487,7 @@ export default {
       const gameCanvas = api.getGameCanvas();
       overlay.ctx.clearRect(0, 0, overlay.canvas.width, overlay.canvas.height);
       drawnTileScreens.clear();
-      if (api.isModalOpen() || api.isAtLoginScreen()) return;
+      if (api.isModalOpen() || isAtLoginScreen()) return;
 
       const base = api.getAbsoluteBase(client);
       if (!base) return;
@@ -504,7 +524,7 @@ export default {
     // ---- POLL ----
     function poll() {
       const client = api.getClient();
-      if (!client || api.isAtLoginScreen()) return;
+      if (!client || isAtLoginScreen()) return;
       const base = api.getAbsoluteBase(client);
       if (!base) return;
 
